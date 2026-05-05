@@ -104,7 +104,7 @@ let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
 let ammo=100, maxAmmo=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0;
-let enemies=[], pBolts=[], eBolts=[];
+let enemies=[], pBolts=[], eBolts=[], explosions=[];
 let lavaLights=[], plumeList=[];
 
 // ── Input state ────────────────────────────────────────────────────────
@@ -852,20 +852,48 @@ function updateEnemies(dt){
 }
 
 function killExplosion(pos){
-  const N=40,geo=new THREE.BufferGeometry(),arr=new Float32Array(N*3),vels=[];
+  const N=40, geo=new THREE.BufferGeometry();
+  const arr=new Float32Array(N*3), vels=[];
   for(let i=0;i<N;i++){
-    arr[i*3]=pos.x+(Math.random()-.5)*1.5;arr[i*3+1]=pos.y+(Math.random()-.5)*1.5;arr[i*3+2]=pos.z+(Math.random()-.5)*1.5;
-    vels.push((Math.random()-.5)*6,(Math.random()-.5)*6+2,(Math.random()-.5)*6);
+    arr[i*3  ]=pos.x+(Math.random()-.5)*1.5;
+    arr[i*3+1]=pos.y+(Math.random()-.5)*1.5;
+    arr[i*3+2]=pos.z+(Math.random()-.5)*1.5;
+    vels.push((Math.random()-.5)*6, (Math.random()-.5)*6+2, (Math.random()-.5)*6);
   }
   geo.setAttribute('position',new THREE.BufferAttribute(arr,3));
   const mat=new THREE.PointsMaterial({color:0xff4400,size:.8,transparent:true,opacity:1,blending:THREE.AdditiveBlending,depthWrite:false});
-  const pts=new THREE.Points(geo,mat);scene.add(pts);
-  const fl=new THREE.PointLight(0xff4400,15,25);fl.position.copy(pos);scene.add(fl);
-  let t=0;const tick=()=>{t+=.04;
-    const pa=geo.attributes.position.array;
-    for(let i=0;i<N;i++){pa[i*3]+=vels[i*3]*.04;pa[i*3+1]+=vels[i*3+1]*.04-.05;pa[i*3+2]+=vels[i*3+2]*.04;}
-    geo.attributes.position.needsUpdate=true;mat.opacity=1-t;mat.size=.8+t*3;fl.intensity=15*(1-t);
-    if(t<1)requestAnimationFrame(tick);else{scene.remove(pts);scene.remove(fl);}}; requestAnimationFrame(tick);
+  const pts=new THREE.Points(geo,mat); scene.add(pts);
+  const fl=new THREE.PointLight(0xff4400,15,25); fl.position.copy(pos); scene.add(fl);
+  // Register in explosions list — updated inside loop() which is the real XR frame callback.
+  // requestAnimationFrame is hijacked by the XR runtime and stalls, causing explosions to
+  // freeze permanently and leak memory. This approach is XR-safe.
+  explosions.push({geo,mat,pts,fl,vels,t:0,N});
+}
+
+// Called every frame from loop() — advances all active explosions and removes finished ones
+function updateExplosions(dt){
+  const done=[];
+  for(const ex of explosions){
+    ex.t+=dt*1.1;  // dt-based so speed is frame-rate independent
+    const pa=ex.geo.attributes.position.array;
+    for(let i=0;i<ex.N;i++){
+      pa[i*3  ]+=ex.vels[i*3  ]*dt;
+      pa[i*3+1]+=ex.vels[i*3+1]*dt - 2.5*dt; // gravity
+      pa[i*3+2]+=ex.vels[i*3+2]*dt;
+    }
+    ex.geo.attributes.position.needsUpdate=true;
+    const life=Math.max(0, 1-ex.t);
+    ex.mat.opacity=life;
+    ex.mat.size=0.8+ex.t*3;
+    ex.fl.intensity=15*life;
+    if(ex.t>=1) done.push(ex);
+  }
+  // Clean up finished explosions — dispose geometry and material to free GPU memory
+  for(const ex of done){
+    scene.remove(ex.pts); scene.remove(ex.fl);
+    ex.geo.dispose(); ex.mat.dispose();
+    explosions=explosions.filter(e=>e!==ex);
+  }
 }
 
 // ── Bolt update ───────────────────────────────────────────────────
@@ -1224,6 +1252,7 @@ function loop(time,frame){
     updateWaves(now);
     fireCooldown=Math.max(0,fireCooldown-dt);
   }
+  updateExplosions(dt); // always runs so in-flight explosions finish even after game over
 
   updateWeapon(dt,now); // always runs so energy cell still pulses on menus
 
