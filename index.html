@@ -1134,16 +1134,31 @@ function updatePlayer(dt){
   // ── Vertical jump physics ────────────────────────────────────────
   const groundY=sampleGround(dolly.position.x,dolly.position.z);
   if(!isGrounded){
-    playerVY-=IO_GRAVITY*dt;           // Io gravity: 1/6 Earth, very floaty
+    playerVY-=IO_GRAVITY*dt;
     dolly.position.y+=playerVY*dt;
-    if(dolly.position.y<=groundY){     // landed
+    if(dolly.position.y<=groundY){
       dolly.position.y=groundY;
       playerVY=0;isGrounded=true;
-      haptic('right',0.6,80);haptic('left',0.5,70); // landing thud
+      haptic('right',0.6,80);haptic('left',0.5,70);
       drawHUD();
     }
   }else{
-    dolly.position.y=groundY;          // normal terrain following
+    dolly.position.y=groundY;
+  }
+
+  // ── Hard floor enforcement ────────────────────────────────────────
+  // All previous approaches estimate camera height indirectly.
+  // In WebXR the camera's world XZ differs from the dolly's (user leans),
+  // and XR head height varies per user. Direct measurement is the only
+  // reliable fix: read the camera's actual world position, sample terrain
+  // at that XZ, and push dolly up if the camera would clip through.
+  // This runs AFTER all dolly movement so it sees the final position.
+  const _camActual=new THREE.Vector3();
+  camera.getWorldPosition(_camActual);
+  const terrainBelowCam=getTerrainMeshHeight(_camActual.x,_camActual.z);
+  const minCamY=terrainBelowCam+2.0;    // camera must stay ≥ 2 m above terrain
+  if(_camActual.y<minCamY){
+    dolly.position.y+=(minCamY-_camActual.y);
   }
 
   // Shield passive regen
