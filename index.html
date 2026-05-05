@@ -1121,14 +1121,6 @@ function updatePlayer(dt){
     shieldRegen+=dt;
     if(shieldRegen>4){shield=Math.min(maxShield,shield+8*dt);}
   }
-  // Health regenerates at 5 units/s after 5 seconds of no damage
-  if(health>0&&health<maxHealth){
-    healthRegen+=dt;
-    if(healthRegen>5){
-      health=Math.min(maxHealth,health+5*dt);
-      drawHUD();
-    }
-  }
 }
 
 // ── Weapon animation (recoil spring, muzzle flash, energy pulse) ──
@@ -1648,6 +1640,19 @@ function loop(time,frame){
     updateWaves(now);
     updateCharge(dt);
     fireCooldown=Math.max(0,fireCooldown-dt);
+
+    // ── Health regen: 5s grace period, then +5 units/s ──────────────
+    // Runs inside gameActive block so healthRegen only ticks during play.
+    // healthRegen is reset to 0 in takeDamage() on every hit.
+    if(health>0&&health<maxHealth){
+      healthRegen+=dt;
+      if(healthRegen>5){
+        const prev=Math.ceil(health);
+        health=Math.min(maxHealth, health+5*dt);
+        // Only redraw HUD when the displayed integer value changes
+        if(Math.ceil(health)!==prev) drawHUD();
+      }
+    }
   }
   updateExplosions(dt);
   updateShockwaves(dt); // always runs so in-flight explosions finish even after game over
