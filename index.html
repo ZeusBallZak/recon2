@@ -58,7 +58,7 @@ canvas{display:block;width:100%;height:100%;}
   <div class="ctrlinfo">
     <span>LEFT STICK</span> Move &nbsp;·&nbsp; <span>LEFT GRIP</span> Sprint<br>
     <span>RIGHT STICK ←→</span> Snap Turn 45° &nbsp;·&nbsp; <span>RIGHT TRIGGER</span> Fire<br>
-    <span>A BUTTON</span> Reload &nbsp;·&nbsp; Raise left wrist to read HUD
+    <span>A BUTTON</span> Super Jump &nbsp;·&nbsp; Raise left wrist to read HUD
   </div>
   <div id="status"></div>
 </div>
@@ -102,14 +102,17 @@ let damageSphere;
 // ── Game state ──────────────────────────────────────────────────────────
 let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
-let ammo=100, maxAmmo=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0;
+// ── Jump physics — Io surface gravity = 1/6 Earth (1.635 m/s²) ──
+let playerVY=0, isGrounded=true;
+const IO_GRAVITY=1.635;        // units/s²
+const JUMP_VEL=Math.sqrt(2*IO_GRAVITY*50); // launch speed to reach 50 units peak
 let enemies=[], pBolts=[], eBolts=[], explosions=[];
 let lavaLights=[], plumeList=[];
 
 // ── Input state ────────────────────────────────────────────────────────
 let snapCooldown=0, leftGripHeld=false, aWasPressed=false;
-let reloading=false, fireCooldown=0, mfTimer=0;
+let fireCooldown=0, mfTimer=0;
 let kickZ=0, kickRX=0; // weapon recoil springs
 
 // ── Super Blast charge state ──────────────────────────────────────
@@ -620,13 +623,30 @@ function drawHUD(){
   // Divider
   ctx.fillStyle='rgba(48,190,255,0.18)';ctx.fillRect(12,96,W-24,1);
 
-  // AMMO
-  ctx.fillStyle=reloading?'rgba(255,155,0,0.9)':cb;
-  ctx.font='bold 52px monospace';ctx.textAlign='left';ctx.fillText(ammo,16,162);
+  // WEAPON — unlimited plasma
+  ctx.fillStyle=cb;ctx.font='bold 14px monospace';ctx.textAlign='left';
+  ctx.fillText('∞  PLASMA',16,130);
+
+  // SUPER BLAST charge bar
+  const chargeT=Math.min(chargeTime/CHARGE_MAX,1);
+  const chargeCol=chargeT>=1?'rgba(255,255,100,1)'
+    :`hsl(${180+chargeT*60},100%,${50+chargeT*30}%)`;
   ctx.fillStyle=cd;ctx.font='bold 13px monospace';
-  ctx.fillText(reloading?'RELOADING...':'PLASMA CHG',16,188);
-  ctx.fillStyle='rgba(18,20,28,0.85)';ctx.fillRect(16,200,182,10);
-  ctx.fillStyle=cb;ctx.fillRect(16,200,182*(ammo/maxAmmo),10);
+  ctx.fillText('SUPER BLAST',16,160);
+  ctx.fillStyle='rgba(18,20,28,0.85)';ctx.fillRect(16,168,310,14);
+  ctx.fillStyle=chargeCol;ctx.fillRect(16,168,310*chargeT,14);
+  if(chargeT>0&&chargeT<1){
+    ctx.fillStyle='rgba(255,255,255,0.6)';ctx.font='bold 11px monospace';
+    ctx.fillText(`${(chargeT*CHARGE_MAX).toFixed(1)}s / ${CHARGE_MAX}s`,16,185);
+  }else if(chargeT>=1){
+    ctx.fillStyle='rgba(255,255,100,0.9)';ctx.font='bold 12px monospace';
+    ctx.fillText('READY!',16,185);
+  }
+
+  // JUMP indicator
+  ctx.fillStyle=isGrounded?cd:'rgba(100,255,180,0.9)';
+  ctx.font='bold 12px monospace';ctx.textAlign='left';
+  ctx.fillText(isGrounded?'[A] SUPER JUMP':'↑ AIRBORNE',16,210);
 
   // Wave / Score / Kills
   ctx.textAlign='right';ctx.font='bold 15px monospace';ctx.fillStyle=cd;
@@ -787,9 +807,10 @@ function onXREnd(){
 function startGame(){
   gameActive=true;gameOverState=false;
   resumeAudioIfNeeded();
-  health=maxHealth;shield=maxShield;ammo=maxAmmo;
+  health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;
-  reloading=false;fireCooldown=0;
+  playerVY=0;isGrounded=true;
+  fireCooldown=0;
   dolly.position.set(0,sampleGround(0,0),0);
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
   drawHUD();
@@ -840,8 +861,8 @@ function haptic(hand, intensity, duration){
 function drainHaptics(){}
 
 function fireWeapon(){
-  if(!rightGrip||fireCooldown>0||reloading||ammo<=0||!gameActive)return;
-  ammo--;fireCooldown=.11;
+  if(!rightGrip||fireCooldown>0||!gameActive)return;
+  fireCooldown=.11;
   drawHUD();
 
   // Muzzle flash
@@ -858,7 +879,6 @@ function fireWeapon(){
   const bDir=new THREE.Vector3(0,0,-1).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
 
   spawnBolt(mPos,bDir,false);
-  if(ammo===0){haptic('right',1.0,250);setTimeout(startReload,300);}  // heavy empty-mag slam
 }
 
 function spawnBolt(startPos,dir,isEnemy){
@@ -887,11 +907,7 @@ function spawnBolt(startPos,dir,isEnemy){
   }
 }
 
-function startReload(){
-  if(reloading||ammo===maxAmmo)return;
-  reloading=true;drawHUD();
-  setTimeout(()=>{ammo=maxAmmo;reloading=false;drawHUD();},1800);
-}
+// (reload removed — unlimited ammo)
 
 // ── Enemies ─────────────────────────────────────────────────────
 function spawnEnemy(){
@@ -1061,9 +1077,14 @@ function updatePlayer(dt){
         dolly.rotation.y-=Math.sign(ax[2])*SENS_SNAP;
         snapCooldown=.38;
       }
-      // A button (index 4): reload
+      // A button (index 4): super jump
       const aNow=gp.buttons[4]?.pressed??false;
-      if(aNow&&!aWasPressed)startReload();
+      if(aNow&&!aWasPressed&&isGrounded){
+        playerVY=JUMP_VEL;
+        isGrounded=false;
+        haptic('right',1.0,120);haptic('left',0.8,100);
+        drawHUD();
+      }
       aWasPressed=aNow;
     }
   }
@@ -1080,9 +1101,20 @@ function updatePlayer(dt){
   dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
   dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
 
-  // Terrain following: dolly sits on the ground; XR head-tracking adds
-  // the physical standing head height (~1.7 m) automatically on top.
-  dolly.position.y=sampleGround(dolly.position.x,dolly.position.z);
+  // ── Vertical jump physics ────────────────────────────────────────
+  const groundY=sampleGround(dolly.position.x,dolly.position.z);
+  if(!isGrounded){
+    playerVY-=IO_GRAVITY*dt;           // Io gravity: 1/6 Earth, very floaty
+    dolly.position.y+=playerVY*dt;
+    if(dolly.position.y<=groundY){     // landed
+      dolly.position.y=groundY;
+      playerVY=0;isGrounded=true;
+      haptic('right',0.6,80);haptic('left',0.5,70); // landing thud
+      drawHUD();
+    }
+  }else{
+    dolly.position.y=groundY;          // normal terrain following
+  }
 
   // Shield passive regen
   if(shield<maxShield){
