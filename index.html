@@ -143,8 +143,38 @@ function n2(x,y){
 }
 function fbm(x,y){let v=0,a=.5,sx=0,sy=100;for(let i=0;i<6;i++){v+=a*n2(x+sx,y+sy);x*=2;y*=2;sx+=31.7;sy+=17.3;a*=.5;}return v;}
 function getH(x,z){return fbm(x*.05,z*.05)*8+fbm(x*.2,z*.2)*2;}
-// Sample 5 surrounding points to avoid camera clipping between mesh verts
-function sampleGround(x,z){return Math.max(getH(x,z),getH(x+1,z),getH(x-1,z),getH(x,z+1),getH(x,z-1));}
+
+// ── Terrain height matching the GPU exactly ───────────────────────────────
+// PlaneGeometry(700,700,100,100) has vertices every 7 units in XZ.
+// The GPU renders by linearly interpolating between those vertex heights.
+// On concave terrain, getH() sampled between vertices returns a value
+// LOWER than the interpolated mesh surface — causing camera clipping.
+// Fix: bilinearly interpolate between the 4 surrounding mesh vertices,
+// exactly replicating what the vertex shader produces.
+// A 0.3-unit floor buffer ensures the camera (XR adds ~1.7 m head height
+// on top of dolly.y) sits at least 2 m above the visible terrain surface.
+const TERRAIN_GRID = 7.0;          // vertex spacing (700 / 100 segments)
+const TERRAIN_FLOOR_BUFFER = 0.3;  // dolly offset → camera ≈ terrain + 2 m
+
+function getTerrainMeshHeight(x, z) {
+  // Snap to surrounding vertex grid
+  const gx = Math.floor(x / TERRAIN_GRID) * TERRAIN_GRID;
+  const gz = Math.floor(z / TERRAIN_GRID) * TERRAIN_GRID;
+  const fx = (x - gx) / TERRAIN_GRID;   // 0..1 fractional position
+  const fz = (z - gz) / TERRAIN_GRID;
+  // Bilinear interpolation of the 4 surrounding vertex heights
+  const h00 = getH(gx,          gz);
+  const h10 = getH(gx + TERRAIN_GRID, gz);
+  const h01 = getH(gx,          gz + TERRAIN_GRID);
+  const h11 = getH(gx + TERRAIN_GRID, gz + TERRAIN_GRID);
+  return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
+}
+
+function sampleGround(x, z) {
+  // Return the true mesh surface height + floor buffer so the camera
+  // never clips through the rendered terrain.
+  return getTerrainMeshHeight(x, z) + TERRAIN_FLOOR_BUFFER;
+}
 
 // ════════════════════════════════════════════════════════════════
 //  GLSL SHADERS
