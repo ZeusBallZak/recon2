@@ -112,6 +112,12 @@ let snapCooldown=0, leftGripHeld=false, aWasPressed=false;
 let reloading=false, fireCooldown=0, mfTimer=0;
 let kickZ=0, kickRX=0; // weapon recoil springs
 
+// ── Super Blast charge state ──────────────────────────────────────
+let triggerHeld=false, chargeTime=0;
+const CHARGE_MAX=10.0; // seconds to full charge
+let chargeOsc=null, chargeGain=null; // audio nodes for rising charge tone
+let shockwaves=[]; // active expanding ring meshes
+
 const SPEED=5.5, SPRINT=9.0, SENS_SNAP=Math.PI/4; // 45° snap turns
 
 // Quest 3 controller pitch offset in radians.
@@ -621,10 +627,26 @@ function buildControllers(){
     });
 
     ctrl.addEventListener('selectstart',()=>{
-      // Right trigger = fire (or restart after death)
       if(ctrl===rightCtrl){
         if(gameOverState){ restartGame(); return; }
-        if(gameActive)fireWeapon();
+        if(gameActive){ triggerHeld=true; startCharge(); }
+      }
+    });
+
+    ctrl.addEventListener('selectend',()=>{
+      if(ctrl===rightCtrl && gameActive && triggerHeld){
+        triggerHeld=false;
+        if(chargeTime>=CHARGE_MAX){
+          // blast already fired at 10s — just stop audio
+          stopCharge();
+        } else if(chargeTime<0.25){
+          // quick tap = normal shot
+          stopCharge(); fireWeapon();
+        } else {
+          // partial charge released — cancel, no shot
+          stopCharge();
+        }
+        chargeTime=0;
       }
     });
   }
@@ -735,6 +757,8 @@ function startGame(){
 
 function restartGame(){
   gameOverState=false;
+  triggerHeld=false; chargeTime=0; stopCharge();
+  shockwaves.forEach(sw=>{scene.remove(sw.mesh);});shockwaves=[];
   enemies.forEach(e=>scene.remove(e));
   pBolts.forEach(p=>scene.remove(p));
   eBolts.forEach(p=>{stopBoltBuzz(p);scene.remove(p);});
@@ -1313,6 +1337,173 @@ function playEnemyShot(worldPos){
   o2.connect(g2);g2.connect(master);o2.start(t);o2.stop(t+0.22);
 }
 
+
+// ════════════════════════════════════════════════════════════════
+//  SUPER BLAST SYSTEM
+//  Hold right trigger 10 s → screen-clearing circular shockwave
+// ════════════════════════════════════════════════════════════════
+
+// ── Charge audio — oscillator sweeps 60 → 1200 Hz over 10 s ──
+function startCharge(){
+  const ctx=getAudio(); if(!ctx) return;
+  stopCharge(); // clear any leftover nodes
+  chargeOsc=ctx.createOscillator(); chargeOsc.type='sawtooth';
+  chargeOsc.frequency.setValueAtTime(60, ctx.currentTime);
+  chargeOsc.frequency.linearRampToValueAtTime(1200, ctx.currentTime+CHARGE_MAX);
+  chargeGain=ctx.createGain();
+  chargeGain.gain.setValueAtTime(0.0, ctx.currentTime);
+  chargeGain.gain.linearRampToValueAtTime(0.55, ctx.currentTime+0.3);
+  chargeOsc.connect(chargeGain); chargeGain.connect(ctx.destination);
+  chargeOsc.start();
+}
+
+function stopCharge(){
+  if(chargeOsc){ try{ chargeOsc.stop(); }catch(e){} chargeOsc=null; }
+  if(chargeGain){ try{ chargeGain.disconnect(); }catch(e){} chargeGain=null; }
+}
+
+// ── Discharge boom sound ──────────────────────────────────────
+function playBlastSound(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  // Massive sub-bass impact
+  const o1=ctx.createOscillator(); o1.type='sine';
+  o1.frequency.setValueAtTime(55,t); o1.frequency.exponentialRampToValueAtTime(14,t+1.8);
+  const g1=ctx.createGain(); g1.gain.setValueAtTime(1.4,t); g1.gain.exponentialRampToValueAtTime(0.001,t+2.0);
+  o1.connect(g1); g1.connect(ctx.destination); o1.start(t); o1.stop(t+2.1);
+  // Mid crunch
+  const o2=ctx.createOscillator(); o2.type='square';
+  o2.frequency.setValueAtTime(180,t); o2.frequency.exponentialRampToValueAtTime(22,t+1.0);
+  const g2=ctx.createGain(); g2.gain.setValueAtTime(0.9,t); g2.gain.exponentialRampToValueAtTime(0.001,t+1.2);
+  o2.connect(g2); g2.connect(ctx.destination); o2.start(t); o2.stop(t+1.3);
+  // Wide noise rumble
+  const nb=ctx.createBuffer(1,ctx.sampleRate*2.5,ctx.sampleRate);
+  const nd=nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=Math.random()*2-1;
+  const ns=ctx.createBufferSource(); ns.buffer=nb;
+  const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
+  const ng=ctx.createGain(); ng.gain.setValueAtTime(0.8,t); ng.gain.exponentialRampToValueAtTime(0.001,t+2.5);
+  ns.connect(lp); lp.connect(ng); ng.connect(ctx.destination); ns.start(t); ns.stop(t+2.6);
+}
+
+// ── Visual shockwave ring ──────────────────────────────────────
+function spawnShockwave(origin){
+  // 3 staggered rings for layered effect
+  [0, 0.08, 0.18].forEach(delay=>{
+    const mat=new THREE.MeshBasicMaterial({
+      color:0x44ddff, transparent:true, opacity:0.85,
+      side:THREE.DoubleSide, depthWrite:false,
+      blending:THREE.AdditiveBlending
+    });
+    const mesh=new THREE.Mesh(new THREE.TorusGeometry(0.5,0.18,8,48), mat);
+    mesh.position.copy(origin);
+    mesh.position.y+=1.2; // roughly gun height
+    mesh.rotation.x=Math.PI/2; // flat horizontal ring
+    scene.add(mesh);
+    shockwaves.push({mesh, mat, age:-delay, maxAge:2.2, maxR:280});
+  });
+
+  // Central flash sphere
+  const fm=new THREE.Mesh(
+    new THREE.SphereGeometry(1,12,8),
+    new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:1,blending:THREE.AdditiveBlending,depthWrite:false})
+  );
+  fm.position.copy(origin); fm.position.y+=1.2; scene.add(fm);
+  shockwaves.push({mesh:fm, mat:fm.material, age:0, maxAge:0.35, maxR:0, isFlash:true});
+
+  // Screen-fill point light burst
+  const bl=new THREE.PointLight(0x44ddff,25,60); bl.position.copy(origin); bl.position.y+=1.2; scene.add(bl);
+  shockwaves.push({mesh:bl, mat:null, age:0, maxAge:0.5, maxR:0, isLight:true, light:bl});
+}
+
+// ── Kill all enemies in shockwave radius ──────────────────────
+function shockwaveKillAll(origin){
+  // Kill every enemy regardless of distance — it's a screen-clearing super
+  const dead=[...enemies];
+  for(const e of dead){
+    killExplosion(e.position.clone());
+    playExplosionSound(e.position.clone());
+    scene.remove(e);
+    kills++; score+=200*wave;
+  }
+  enemies=[];
+  if(dead.length>0) drawHUD();
+  haptic('right',1.0,600); haptic('left',1.0,500);
+}
+
+// ── Fire the super blast ──────────────────────────────────────
+function fireBlast(){
+  stopCharge();
+  const origin=new THREE.Vector3(); dolly.getWorldPosition(origin);
+  spawnShockwave(origin);
+  shockwaveKillAll(origin);
+  playBlastSound();
+  chargeTime=0; triggerHeld=false;
+  // Brief weapon cooldown so you can't immediately fire after blast
+  fireCooldown=1.5;
+}
+
+// ── Update shockwave rings each frame ────────────────────────
+function updateShockwaves(dt){
+  const done=[];
+  for(const sw of shockwaves){
+    sw.age+=dt;
+    if(sw.age<0) continue; // delayed ring — not spawned yet
+    const p=Math.min(1, sw.age/sw.maxAge);
+
+    if(sw.isFlash){
+      sw.mat.opacity=1-p;
+      const s=1+p*6; sw.mesh.scale.setScalar(s);
+    } else if(sw.isLight){
+      sw.light.intensity=25*(1-p);
+    } else {
+      // Expand ring radius, fade out
+      const r=0.5+p*sw.maxR;
+      sw.mesh.scale.setScalar(r);
+      sw.mat.opacity=(1-p)*0.85;
+      sw.mesh.material.linewidth=Math.max(0.5,(1-p)*3);
+    }
+
+    if(sw.age>=sw.maxAge) done.push(sw);
+  }
+  for(const sw of done){
+    scene.remove(sw.mesh);
+    if(sw.mat) sw.mat.dispose();
+    if(sw.mesh.geometry) sw.mesh.geometry.dispose();
+    shockwaves=shockwaves.filter(x=>x!==sw);
+  }
+}
+
+// ── Update charge each frame — auto-fire at 10 s ─────────────
+function updateCharge(dt){
+  if(!triggerHeld||!gameActive) return;
+  chargeTime+=dt;
+
+  // Pulse weapon energy cells white as charge builds
+  if(weaponGroup){
+    const t=chargeTime/CHARGE_MAX;
+    const pulse=0.8+0.2*Math.sin(Date.now()*0.02*(1+t*6));
+    const intensity=2.6+t*12*pulse;
+    const col=new THREE.Color().setHSL(0.55-t*0.55, 1, 0.5+t*0.4); // cyan → white
+    for(const m of energyCells){
+      m.material.emissive=col;
+      m.material.emissiveIntensity=intensity;
+    }
+    // Screen damage-sphere repurposed as charge glow — blue tint
+    damageSphere.material.color.setHex(0x0088ff);
+    damageSphere.material.opacity=t*0.18;
+    // Haptic rumble grows stronger as charge builds
+    if(Math.floor(chargeTime*4)!==Math.floor((chargeTime-dt)*4)){
+      haptic('right', 0.15+t*0.6, 40);
+    }
+  }
+
+  if(chargeTime>=CHARGE_MAX){
+    damageSphere.material.opacity=0;
+    damageSphere.material.color.setHex(0xff0000);
+    fireBlast();
+  }
+}
+
 // ════════════════════════════════════════════════════════════════
 //  RENDER LOOP
 // ════════════════════════════════════════════════════════════════
@@ -1330,9 +1521,11 @@ function loop(time,frame){
     updateEnemies(dt);
     updateBolts(dt);
     updateWaves(now);
+    updateCharge(dt);
     fireCooldown=Math.max(0,fireCooldown-dt);
   }
-  updateExplosions(dt); // always runs so in-flight explosions finish even after game over
+  updateExplosions(dt);
+  updateShockwaves(dt); // always runs so in-flight explosions finish even after game over
 
   updateWeapon(dt,now); // always runs so energy cell still pulses on menus
 
