@@ -102,7 +102,7 @@ let damageSphere;
 // ── Game state ──────────────────────────────────────────────────────────
 let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
-let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0;
+let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0;
 // ── Jump physics — Io surface gravity = 1/6 Earth (1.635 m/s²) ──
 let playerVY=0, isGrounded=true;
 const IO_GRAVITY=1.635;        // units/s²
@@ -608,8 +608,8 @@ function drawHUD(){
     hudTexture.needsUpdate=true;return;
   }
 
-  // HULL bar
-  ctx.fillStyle=cd;ctx.font='bold 16px monospace';ctx.textAlign='left';ctx.fillText('HULL',16,46);
+  // HEALTH bar
+  ctx.fillStyle=cd;ctx.font='bold 16px monospace';ctx.textAlign='left';ctx.fillText('HEALTH',16,46);
   ctx.fillStyle='rgba(18,20,28,0.85)';ctx.fillRect(90,28,306,20);
   ctx.fillStyle=`hsl(${(health/maxHealth)*25},90%,50%)`;ctx.fillRect(90,28,306*(health/maxHealth),20);
   ctx.fillStyle=cb;ctx.font='bold 14px monospace';ctx.textAlign='right';ctx.fillText(Math.ceil(health),W-16,46);
@@ -808,7 +808,7 @@ function startGame(){
   gameActive=true;gameOverState=false;
   resumeAudioIfNeeded();
   health=maxHealth;shield=maxShield;
-  score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;
+  score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
   playerVY=0;isGrounded=true;
   fireCooldown=0;
   dolly.position.set(0,sampleGround(0,0),0);
@@ -1121,6 +1121,14 @@ function updatePlayer(dt){
     shieldRegen+=dt;
     if(shieldRegen>4){shield=Math.min(maxShield,shield+8*dt);}
   }
+  // Health regenerates at 5 units/s after 5 seconds of no damage
+  if(health>0&&health<maxHealth){
+    healthRegen+=dt;
+    if(healthRegen>5){
+      health=Math.min(maxHealth,health+5*dt);
+      drawHUD();
+    }
+  }
 }
 
 // ── Weapon animation (recoil spring, muzzle flash, energy pulse) ──
@@ -1138,7 +1146,7 @@ function updateWeapon(dt,now){
 function takeDamage(dmg){
   if(!gameActive)return;
   if(shield>0){const ab=Math.min(shield,dmg*.7);shield-=ab;dmg-=ab;shieldRegen=0;}
-  health-=dmg;health=Math.max(0,health);drawHUD();
+  health-=dmg;health=Math.max(0,health);healthRegen=0;drawHUD();
   // Damage shake — intensity and duration scale with how hard you were hit
   haptic('right', 1.0, Math.min(600, 200+dmg*18));  // full-power impact shake
   haptic('left',  1.0, Math.min(500, 180+dmg*15));
