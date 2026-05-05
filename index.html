@@ -615,7 +615,7 @@ function drawHUD(){
   ctx.fillStyle=cb;ctx.font='bold 14px monospace';ctx.textAlign='right';ctx.fillText(Math.ceil(health),W-16,46);
 
   // SHIELD bar
-  ctx.fillStyle=cd;ctx.font='bold 16px monospace';ctx.textAlign='left';ctx.fillText('SHLD',16,80);
+  ctx.fillStyle=cd;ctx.font='bold 16px monospace';ctx.textAlign='left';ctx.fillText('SHIELD',16,80);
   ctx.fillStyle='rgba(18,20,28,0.85)';ctx.fillRect(90,62,306,20);
   ctx.fillStyle=`rgba(0,110,255,${0.3+0.7*(shield/maxShield)})`;ctx.fillRect(90,62,306*(shield/maxShield),20);
   ctx.fillStyle=cb;ctx.font='bold 14px monospace';ctx.textAlign='right';ctx.fillText(Math.ceil(shield),W-16,80);
