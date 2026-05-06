@@ -156,6 +156,7 @@ let chargeOsc=null, chargeGain=null;
 let shockwaves=[];
 let chargeSphere=null, chargeBoids=null, chargeBoidData=[];
 let waveBillboard=null;
+let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
 let currentWeapon='laser';
@@ -961,7 +962,7 @@ function startGame(){
   setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
-  playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;
+  playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
@@ -975,6 +976,7 @@ function startGame(){
 
 function restartGame(){
   gameOverState=false;
+  clearGameOverBanner();
   triggerHeld=false; chargeTime=0; stopCharge();
   if(chargeSphere) chargeSphere.material.opacity=0;
   if(chargeBoids)  chargeBoids.material.opacity=0;
@@ -1401,23 +1403,43 @@ function updatePlayer(dt){
   // ── Dash tick ───────────────────────────────────────────────────
   dashCooldown=Math.max(0,dashCooldown-dt);
   if(dashActive){
-    // Check for enemy within DASH_STOP_R in front — stop before impact
-    let blocked=false;
-    const dashFront=dolly.position.clone().addScaledVector(_dashDir, DASH_STOP_R);
+    const step=Math.min(dashRemaining,dt)*DASH_SPEED;
+    dolly.position.addScaledVector(_dashDir,step);
+    dashRemaining-=dt;
+
+    // Each frame, check every enemy within 2–3 m of the player.
+    // Hit enemies are: knocked back 5 m away from the player and
+    // dealt 20% of their max HP as damage. Each enemy can only be
+    // struck once per dash (tracked in ud.dashHit).
+    const dPos=dolly.position;
     for(const e of enemies){
-      if(dashFront.distanceTo(e.position)<DASH_STOP_R+1.5){blocked=true;break;}
-    }
-    if(blocked){
-      dashActive=false;dashRemaining=0;
-      haptic('right',1.0,150);haptic('left',0.8,120); // collision thud
-    }else{
-      const step=Math.min(dashRemaining,dt)*DASH_SPEED;
-      dolly.position.addScaledVector(_dashDir,step);
-      dashRemaining-=dt;
-      if(dashRemaining<=0){
-        dashActive=false;dashRemaining=0;
-        haptic('right',0.5,60); // soft stop
+      const ud=e.userData;
+      if(ud.dashHit)continue; // already struck this dash
+      const toE=new THREE.Vector3().subVectors(e.position,dPos);
+      const dist=toE.length();
+      if(dist<3.0){
+        ud.dashHit=true;
+        // 20% max HP damage
+        ud.hp-=Math.ceil(ud.maxHp*.20);
+        // Push back 5 m directly away from the player
+        const pushDir=toE.lengthSq()>.001?toE.normalize():_dashDir.clone();
+        e.position.addScaledVector(pushDir,5);
+        // Clamp pushed enemy to terrain height
+        e.position.y=getH(e.position.x,e.position.z)+ud.hoverH;
+        // Brief visual flash on hit
+        if(ud.body){
+          ud.body.material.emissive.setHex(0xffffff);
+          setTimeout(()=>{if(ud.body)ud.body.material.emissive.setHex(ud.body.material.emissive.getHex()&&0x440800);},120);
+        }
+        haptic('right',1.0,60);
       }
+    }
+
+    if(dashRemaining<=0){
+      dashActive=false;dashRemaining=0;
+      // Clear dashHit flags so enemies can be hit on next dash
+      enemies.forEach(e=>{ e.userData.dashHit=false; });
+      haptic('right',0.5,60);
     }
   }
 
@@ -1505,6 +1527,8 @@ function takeDamage(dmg){
 function triggerGameOver(){
   gameActive=false;gameOverState=true;
   stopAllAudio();
+  window.speechSynthesis?.cancel();
+  setTimeout(showGameOverBanner, 400); // brief delay so VR frame settles
   saveScore(score,wave,kills).then(()=>drawGameOverHUD());
   enemies.forEach(e=>scene.remove(e));
   pBolts.forEach(p=>scene.remove(p));
@@ -2472,6 +2496,92 @@ function updateVolcanoLODs(){
 //  fades in → holds → fades out, then disposes itself.
 // ════════════════════════════════════════════════════════════════
 
+// ── Game Over Billboard ───────────────────────────────────────────
+// Same floating canvas-texture architecture as the wave banner but
+// rendered in crimson with full stats, and stays visible until restart.
+function showGameOverBanner(){
+  if(gameOverBillboard){ scene.remove(gameOverBillboard); gameOverBillboard=null; }
+
+  const W=640, H=320;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const c=cv.getContext('2d');
+
+  // Background
+  c.clearRect(0,0,W,H);
+  c.fillStyle='rgba(12,0,0,0.94)';
+  if(c.roundRect){ c.beginPath();c.roundRect(8,8,W-16,H-16,20);c.fill(); }
+  else c.fillRect(8,8,W-16,H-16);
+
+  // Crimson glow border
+  c.strokeStyle='rgba(220,20,20,0.70)'; c.lineWidth=2.5;
+  if(c.roundRect){ c.beginPath();c.roundRect(8,8,W-16,H-16,20);c.stroke(); }
+  else c.strokeRect(8,8,W-16,H-16);
+
+  // Inner dim border
+  c.strokeStyle='rgba(180,0,0,0.25)'; c.lineWidth=1;
+  if(c.roundRect){ c.beginPath();c.roundRect(18,18,W-36,H-36,14);c.stroke(); }
+
+  // "GAME OVER" — large glowing red
+  c.fillStyle='#ff1a1a';
+  c.shadowColor='#cc0000'; c.shadowBlur=40;
+  c.font='bold 100px monospace';
+  c.textAlign='center';
+  c.fillText('GAME OVER', W/2, 118);
+  c.shadowBlur=0;
+
+  // Scanline divider
+  c.strokeStyle='rgba(200,20,20,0.35)'; c.lineWidth=1;
+  c.beginPath(); c.moveTo(50,138); c.lineTo(W-50,138); c.stroke();
+
+  // Stats row
+  c.font='bold 22px monospace'; c.fillStyle='rgba(255,140,140,0.80)';
+  c.fillText(`SCORE  ${score.toLocaleString()}`, W/2-160, 178);
+  c.fillText(`WAVE  ${wave}`, W/2+20, 178);
+  c.fillText(`KILLS  ${kills}`, W/2+160, 178);
+
+  // Instruction
+  c.font='14px monospace'; c.fillStyle='rgba(220,60,60,0.50)';
+  c.fillText('PULL RIGHT TRIGGER TO REDEPLOY', W/2, 228);
+
+  const tex=new THREE.CanvasTexture(cv);
+  const mat=new THREE.MeshBasicMaterial({
+    map:tex, transparent:true, opacity:0,
+    side:THREE.DoubleSide, depthWrite:false
+  });
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(4.0,2.0), mat);
+  mesh.userData={age:0, phase:'in'};  // phases: 'in' → 'hold' (stays, no auto-fade)
+
+  const fwd=new THREE.Vector3();
+  camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  mesh.position.copy(camPos).addScaledVector(fwd, 7);
+  mesh.position.y=camPos.y+0.3;
+  mesh.lookAt(camPos);
+
+  scene.add(mesh);
+  gameOverBillboard=mesh;
+}
+
+function updateGameOverBanner(dt){
+  if(!gameOverBillboard) return;
+  const ud=gameOverBillboard.userData;
+  ud.age+=dt;
+  if(ud.phase==='in'){
+    gameOverBillboard.material.opacity=Math.min(1, ud.age/0.6);
+    if(ud.age>=0.6){ ud.phase='hold'; }
+  }
+  // 'hold' phase: stays at full opacity until removed by restartGame
+}
+
+function clearGameOverBanner(){
+  if(!gameOverBillboard) return;
+  scene.remove(gameOverBillboard);
+  gameOverBillboard.material.map.dispose();
+  gameOverBillboard.material.dispose();
+  gameOverBillboard.geometry.dispose();
+  gameOverBillboard=null;
+}
+
 function showWaveBanner(waveNum){
   // Remove any existing banner immediately
   if(waveBillboard){ scene.remove(waveBillboard); waveBillboard=null; }
@@ -3262,6 +3372,7 @@ function loop(time,frame){
   updateExplosions(dt);
   updateShockwaves(dt);
   updateWaveBanner(dt);
+  updateGameOverBanner(dt);
   updateDust(dt);
   updateRockLODs();
   updateVolcanoLODs();
