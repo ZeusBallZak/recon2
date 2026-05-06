@@ -161,7 +161,16 @@ let gameOverBillboard=null;
 // ── Weapon system ─────────────────────────────────────────────────────
 let currentWeapon='laser';
 let weaponAmmoMap={laser:Infinity};
-let grenadeProjs=[], rocketProjs=[], cannonProjs=[];
+let grenadeProjs=[], rocketProjs=[], cannonProjs=[], slashWaves=[];
+// ── Sword slash wave velocity tracking ──────────────────────────
+// Track right grip world position each frame to compute swing velocity.
+const _prevGripPos=new THREE.Vector3();
+const _currGripPos=new THREE.Vector3();
+let gripVelX=0, gripVelY=0, gripVelZ=0; // world-space velocity components
+const SLASH_SPEED_THRESHOLD=4.0;  // m/s — minimum swing speed to fire a slash wave
+const SLASH_COOLDOWN=0.28;        // seconds between slash waves (prevent spam on slow swings)
+let slashCooldown=0;
+let gripPosInitialised=false;
 let pickups=[];
 let flameCooldown=0;
 
@@ -853,14 +862,33 @@ function buildChargeFX(){
 
 // Returns the tip offset in rightGrip local space for the current weapon
 // (after weaponGroup's scale 1.5× and position are applied)
+// ── Sword blade tip marker ────────────────────────────────────────
+// An invisible Object3D placed at the sword's blade tip in saber geometry
+// space (0, 0.80, 0 — blade top). Used by getWeaponTipOffset().
+let saberTip=null;
+
 function getWeaponTipOffset(){
-  // Saber: blade now points along -Z (after 90° X rotation).
-  // Blade is 0.70 units long in weapon space; at scale 1.5× = 1.05 world units.
-  // Tip is at grip offset z (-0.135) minus blade length (-1.05) = -1.185
-  if(currentWeapon==='saber') return new THREE.Vector3(0.01*1.5, 0.108, -0.135-1.05);
-  // All gun-type weapons: muzzle tip at weapon-local (0, 0.002, -0.488)
-  // after scale 1.5 → z = -0.732; add grip offset
-  return new THREE.Vector3(0.01*1.5, 0.108+0.003, -0.135-0.732);
+  // Read the actual world position of the appropriate tip object, then
+  // convert to rightGrip local space so chargeFXGroup can be positioned there.
+  if(!rightGrip) return new THREE.Vector3(0,0,0);
+
+  let worldPos=new THREE.Vector3();
+
+  if(currentWeapon==='saber'){
+    if(saberTip){
+      saberTip.getWorldPosition(worldPos);
+    } else {
+      // Fallback: approximate — grip origin + offset along grip -Z
+      rightGrip.getWorldPosition(worldPos);
+    }
+  } else {
+    // All guns: use muzzleSphere world position (already exactly at barrel tip)
+    if(muzzleSphere) muzzleSphere.getWorldPosition(worldPos);
+    else rightGrip.getWorldPosition(worldPos);
+  }
+
+  // Convert world → rightGrip local so chargeFXGroup.position is correct
+  return rightGrip.worldToLocal(worldPos);
 }
 
 function onLeftConnected(){
@@ -961,6 +989,8 @@ function startGame(){
   currentWeaponIndex=0;
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
+  slashWaves.forEach(sw=>scene.remove(sw.grp)); slashWaves=[];
+  gripPosInitialised=false;
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
   setTimeout(spawnInitialPickups, 1200);
   dolly.position.set(0, getTerrainMeshHeight(0,0), 0);
@@ -1503,7 +1533,11 @@ function updateWeapon(dt,now){
 }
 
 // ── Damage ────────────────────────────────────────────────────────
+// ── GOD MODE — set true for testing, false for release ───────────
+const GOD_MODE = true;
+
 function takeDamage(dmg){
+  if(GOD_MODE)return; // infinite health
   if(!gameActive)return;
   if(shield>0){const ab=Math.min(shield,dmg*.7);shield-=ab;dmg-=ab;shieldRegen=0;}
   health-=dmg;health=Math.max(0,health);healthRegen=0;drawHUD();
@@ -2028,6 +2062,8 @@ function buildWeaponGeometry(type, parent){
     // Triforce pommel gem
     smk(new THREE.OctahedronGeometry(.028),new THREE.MeshStandardMaterial({color:0xffdd00,emissive:0xffaa00,emissiveIntensity:3}),0,-.09,0);
     const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);sg.add(l);
+    // Invisible tip marker — used by getWeaponTipOffset() to find blade tip in world space
+    saberTip=new THREE.Object3D();saberTip.position.set(0,.80,0);sg.add(saberTip);
   }
   else if(type==='scatter'){
     // Icosahedron body + 8 spike barrels
@@ -2097,7 +2133,8 @@ function buildWeaponGeometry(type, parent){
 // ── Equip weapon: swap geometry on rightGrip weaponGroup ─────────
 function equipWeapon(type){
   currentWeapon=type;
-  currentWeaponIndex=WEAPONS_ORDER.indexOf(type); // keep X-cycle in sync
+  currentWeaponIndex=WEAPONS_ORDER.indexOf(type);
+  if(type!=='saber') saberTip=null; // cleared; will be set when saber geometry is built
   const def=WEAPONS[type];
   if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
   // Partial refill on pickup if already owned
@@ -2289,18 +2326,9 @@ function fireGrenade(){
 }
 
 function fireSaber(){
+  // Trigger pull with saber = melee VFX + close-range damage
   playSwingSound();
-  // Saber swing arc VFX — spawn multiple trail arcs
   for(let i=0;i<4;i++) setTimeout(spawnSaberTrail, i*40);
-  const {mPos,bDir}=getBarrelData();
-  const arcMat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  const arcMesh=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,1.4,8),arcMat);
-  arcMesh.position.copy(mPos).addScaledVector(bDir,-.7);
-  const rightVec=new THREE.Vector3(1,0,0).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
-  arcMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),rightVec);
-  scene.add(arcMesh);
-  setTimeout(()=>scene.remove(arcMesh),180);
-  // Kill all enemies within 5m
   const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
   for(const e of enemies){
     if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99;
@@ -2406,6 +2434,85 @@ function fireCannon(){
 }
 
 // ── Grenade & rocket & cannon update ─────────────────────────────
+// ════════════════════════════════════════════════════════════════
+//  SWORD SLASH WAVES  — velocity-driven crescent energy projectiles
+//
+//  Research sources:
+//   • Zelda Skyward Sword / BotW: swing velocity threshold → crescent wave
+//   • One Piece Pirate Warriors: blade arc projected as flying thin disc
+//   • VR rhythm games: tip delta position per frame → speed + direction
+//
+//  Implementation: track rightGrip world position each frame, compute
+//  velocity vector, fire a crescent TorusGeometry arc projectile when
+//  swing speed exceeds SLASH_SPEED_THRESHOLD m/s. Projectile travels
+//  in the exact swing direction, expands slightly, fades, hits enemies.
+// ════════════════════════════════════════════════════════════════
+
+function spawnSlashWave(origin, dir){
+  const grp=new THREE.Group(); grp.position.copy(origin);
+  grp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,-1), dir.clone().normalize());
+
+  // Core crescent arc (white)
+  const coreMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.95,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.38,.028,6,28,Math.PI*1.6),coreMat));
+
+  // Outer cyan glow
+  const glowMat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.55,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.44,.055,5,24,Math.PI*1.65),glowMat));
+
+  // Inner secondary crescent (slightly rotated for depth layering)
+  const innerMat=new THREE.MeshBasicMaterial({color:0xaaffff,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const inner=new THREE.Mesh(new THREE.TorusGeometry(.28,.018,5,22,Math.PI*1.4),innerMat);
+  inner.rotation.z=.18; grp.add(inner);
+
+  const pl=new THREE.PointLight(0x44ffff,4,7); grp.add(pl);
+  scene.add(grp);
+  slashWaves.push({grp,coreMat,glowMat,innerMat,pl,vel:dir.clone().normalize().multiplyScalar(45),age:0,maxAge:1.8});
+}
+
+function updateSlashDetection(dt){
+  if(currentWeapon!=='saber'||!rightGrip||!gameActive){gripPosInitialised=false;return;}
+  slashCooldown=Math.max(0,slashCooldown-dt);
+  rightGrip.getWorldPosition(_currGripPos);
+  if(!gripPosInitialised){_prevGripPos.copy(_currGripPos);gripPosInitialised=true;return;}
+  const vx=(_currGripPos.x-_prevGripPos.x)/dt;
+  const vy=(_currGripPos.y-_prevGripPos.y)/dt;
+  const vz=(_currGripPos.z-_prevGripPos.z)/dt;
+  const speed=Math.sqrt(vx*vx+vy*vy+vz*vz);
+  if(speed>SLASH_SPEED_THRESHOLD&&slashCooldown<=0){
+    slashCooldown=SLASH_COOLDOWN;
+    const swingDir=new THREE.Vector3(vx,vy,vz).normalize();
+    const origin=new THREE.Vector3();
+    if(saberTip) saberTip.getWorldPosition(origin);
+    else rightGrip.getWorldPosition(origin);
+    spawnSlashWave(origin, swingDir);
+    playSwingSound();
+    haptic('right',0.7,35);
+    spawnSaberTrail();
+  }
+  _prevGripPos.copy(_currGripPos);
+}
+
+function updateSlashWaves(dt){
+  const done=[];
+  for(const sw of slashWaves){
+    sw.age+=dt;
+    sw.grp.position.addScaledVector(sw.vel,dt);
+    const life=Math.max(0,1-sw.age/sw.maxAge);
+    sw.coreMat.opacity=life*.95; sw.glowMat.opacity=life*.55; sw.innerMat.opacity=life*.7;
+    sw.pl.intensity=life*4;
+    const s=1+sw.age*.6; sw.grp.scale.setScalar(s);
+    for(const e of enemies){
+      if(sw.grp.position.distanceTo(e.position)<1.8+sw.age*.3){
+        e.userData.hp-=25;
+        triggerKillFlash(0x44ffff);
+      }
+    }
+    if(sw.age>=sw.maxAge) done.push(sw);
+  }
+  done.forEach(sw=>{scene.remove(sw.grp);slashWaves=slashWaves.filter(x=>x!==sw);});
+}
+
 function updateProjectiles(dt){
   // Grenades — gravity arc, explode on terrain
   const gDone=[];
@@ -3347,7 +3454,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); }
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSlashWaves(dt); }
 
   // updateWeapon moved above
 
