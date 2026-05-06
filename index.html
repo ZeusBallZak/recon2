@@ -2011,9 +2011,7 @@ function buildWeaponGeometry(type, parent){
     // Volt Saber — Light Saber × Zelda Master Sword hybrid
     // Rotated 90° around X so the blade points forward (-Z) matching
     // the Quest 3 controller grip orientation. Handle sits at the grip.
-    // +Math.PI/2 on X: compensates so holding the controller naturally upright
-    // (handle down, buttons forward) points the blade straight up — like gripping a sword.
-    const sg=new THREE.Group(); sg.rotation.x=Math.PI/2; parent.add(sg);
+    const sg=new THREE.Group(); sg.rotation.x=Math.PI*1.5; parent.add(sg);
     const smk=(g,m,x=0,y=0,z=0,rx=0,ry=0,rz=0)=>{
       const ms=new THREE.Mesh(g,m);ms.position.set(x,y,z);
       if(rx||ry||rz)ms.rotation.set(rx,ry,rz);sg.add(ms);return ms;};
