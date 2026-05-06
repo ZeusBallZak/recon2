@@ -2974,7 +2974,7 @@ function updateCharge(dt){
 
   // ── Energy sphere: grows from invisible pinpoint to ~6 cm radius ──
   if(chargeSphere){
-    const r=0.001+t*0.06;                    // 0.001 → 0.061 weapon-local units
+    const r=0.001+t*0.12;                    // 0.001 → 0.121 — doubled from 0.06
     chargeSphere.scale.setScalar(r);
     // Flicker faster near full charge
     const flicker=0.7+0.3*Math.sin(Date.now()*0.006*(1+t*8));
@@ -2986,7 +2986,7 @@ function updateCharge(dt){
   // ── Boid particles: orbit + flock toward sphere, grow in number/size ──
   if(chargeBoids&&chargeBoidData.length){
     const pa=chargeBoids.geometry.attributes.position.array;
-    const orbitR=0.012+t*0.055;             // tightening orbit radius
+    const orbitR=0.012+t*0.11;              // doubled from 0.055 — boids orbit the larger sphere
     const now=Date.now()*0.001;
     for(let i=0;i<chargeBoidData.length;i++){
       const b=chargeBoidData[i];
