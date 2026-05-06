@@ -1526,6 +1526,14 @@ function takeDamage(dmg){
 
 function triggerGameOver(){
   gameActive=false;gameOverState=true;
+  // Stop super blast charge immediately — if the player dies while holding
+  // the trigger, chargeOsc is still live and will resume when AudioContext
+  // unuspends. Disconnect and null it here before suspending.
+  triggerHeld=false;chargeTime=0;stopCharge();
+  if(chargeSphere)chargeSphere.material.opacity=0;
+  if(chargeBoids) chargeBoids.material.opacity=0;
+  damageSphere.material.opacity=0;
+  damageSphere.material.color.setHex(0xff0000);
   stopAllAudio();
   window.speechSynthesis?.cancel();
   setTimeout(showGameOverBanner, 400); // brief delay so VR frame settles
@@ -1697,8 +1705,8 @@ function playPlayerShot(){
 //   f_obs = f₀ · c / (c − v_radial)
 // where v_radial = component of bolt velocity toward the camera,
 // giving a rising whine on approach and a falling growl on pass.
-const BUZZ_C = 55;   // effective "speed of sound" in game units/s
-const BUZZ_F0 = 230; // base oscillator frequency Hz
+const BUZZ_C = 55;
+const BUZZ_F0 = 95;  // lowered from 230 Hz — deep alien growl instead of high buzz
 
 function createBoltBuzz(bolt){
   const ctx=getAudio();if(!ctx)return;
@@ -1716,7 +1724,7 @@ function createBoltBuzz(bolt){
   master.connect(pan);
 
   // LFO tremolo at 30 Hz — the "buzzing" texture character
-  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=30;
+  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=10; // lowered from 30 Hz
   const lfoAmt=ctx.createGain();lfoAmt.gain.value=0.18;
   lfo.connect(lfoAmt);lfoAmt.connect(master.gain);
 
@@ -1785,17 +1793,17 @@ function playEnemyShot(worldPos){
 
   const master=ctx.createGain();master.gain.value=0.80;master.connect(pan);
 
-  // Square sweep: 520 → 90 Hz (deep, threatening)
+  // Square sweep: 180 → 35 Hz (lowered from 520→90 — sub-bass thud)
   const o1=ctx.createOscillator();o1.type='square';
-  o1.frequency.setValueAtTime(520,t);
-  o1.frequency.exponentialRampToValueAtTime(90,t+0.20);
+  o1.frequency.setValueAtTime(180,t);
+  o1.frequency.exponentialRampToValueAtTime(35,t+0.20);
   const g1=ctx.createGain();g1.gain.setValueAtTime(0.35,t);g1.gain.exponentialRampToValueAtTime(0.001,t+0.22);
   o1.connect(g1);g1.connect(master);o1.start(t);o1.stop(t+0.25);
 
-  // Sawtooth buzz: 260 → 45 Hz (alien harmonic texture)
+  // Sawtooth buzz: 90 → 18 Hz (lowered from 260→45 — deep rumble)
   const o2=ctx.createOscillator();o2.type='sawtooth';
-  o2.frequency.setValueAtTime(260,t);
-  o2.frequency.exponentialRampToValueAtTime(45,t+0.18);
+  o2.frequency.setValueAtTime(90,t);
+  o2.frequency.exponentialRampToValueAtTime(18,t+0.18);
   const g2=ctx.createGain();g2.gain.setValueAtTime(0.18,t);g2.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   o2.connect(g2);g2.connect(master);o2.start(t);o2.stop(t+0.22);
 }
@@ -2179,7 +2187,7 @@ function playPickupSound(type){
   const ctx=getAudio(); if(!ctx) return;
   const t=ctx.currentTime;
   const o=ctx.createOscillator(); o.type='sine';
-  o.frequency.setValueAtTime(400,t); o.frequency.exponentialRampToValueAtTime(1200,t+.18);
+  o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(600,t+.18);
   const g=ctx.createGain(); g.gain.setValueAtTime(.4,t); g.gain.exponentialRampToValueAtTime(.001,t+.22);
   o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t+.25);
 }
@@ -2189,10 +2197,10 @@ function playSwingSound(){
   const ctx=getAudio(); if(!ctx) return;
   const t=ctx.currentTime;
   const o=ctx.createOscillator(); o.type='sine';
-  o.frequency.setValueAtTime(900,t); o.frequency.exponentialRampToValueAtTime(200,t+.22);
+  o.frequency.setValueAtTime(380,t); o.frequency.exponentialRampToValueAtTime(80,t+.22);
   const g=ctx.createGain(); g.gain.setValueAtTime(.35,t); g.gain.exponentialRampToValueAtTime(.001,t+.25);
   const o2=ctx.createOscillator(); o2.type='sawtooth';
-  o2.frequency.setValueAtTime(1800,t); o2.frequency.exponentialRampToValueAtTime(400,t+.18);
+  o2.frequency.setValueAtTime(760,t); o2.frequency.exponentialRampToValueAtTime(160,t+.18);
   const g2=ctx.createGain(); g2.gain.setValueAtTime(.12,t); g2.gain.exponentialRampToValueAtTime(.001,t+.20);
   o.connect(g); o2.connect(g2); g.connect(ctx.destination); g2.connect(ctx.destination);
   o.start(t); o2.start(t); o.stop(t+.28); o2.stop(t+.22);
@@ -2676,8 +2684,8 @@ function startCharge(){
   const ctx=getAudio(); if(!ctx) return;
   stopCharge(); // clear any leftover nodes
   chargeOsc=ctx.createOscillator(); chargeOsc.type='sawtooth';
-  chargeOsc.frequency.setValueAtTime(60, ctx.currentTime);
-  chargeOsc.frequency.linearRampToValueAtTime(1200, ctx.currentTime+CHARGE_MAX);
+  chargeOsc.frequency.setValueAtTime(40, ctx.currentTime);
+  chargeOsc.frequency.linearRampToValueAtTime(320, ctx.currentTime+CHARGE_MAX);
   chargeGain=ctx.createGain();
   chargeGain.gain.setValueAtTime(0.0, ctx.currentTime);
   chargeGain.gain.linearRampToValueAtTime(0.55, ctx.currentTime+0.3);
@@ -2686,8 +2694,8 @@ function startCharge(){
 }
 
 function stopCharge(){
-  if(chargeOsc){ try{ chargeOsc.stop(); }catch(e){} chargeOsc=null; }
   if(chargeGain){ try{ chargeGain.disconnect(); }catch(e){} chargeGain=null; }
+  if(chargeOsc){  try{ chargeOsc.stop(); }catch(e){} chargeOsc=null; }
 }
 
 // ── Discharge boom sound ──────────────────────────────────────
@@ -3235,7 +3243,7 @@ function startEnemyHum(e){
   pan.panningModel='HRTF';pan.distanceModel='inverse';pan.refDistance=5;pan.maxDistance=60;pan.rolloffFactor=1.2;
   setPannerPos(pan,e.position);pan.connect(ctx.destination);
   const osc=ctx.createOscillator();osc.type='sine';
-  const baseF=e.userData.type==='heavy'?42:e.userData.type==='scout'?120:70;
+  const baseF=e.userData.type==='heavy'?18:e.userData.type==='scout'?45:30; // lowered from 42/120/70
   osc.frequency.value=baseF;
   const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=.4+Math.random()*.3;
   const lfoG=ctx.createGain();lfoG.gain.value=8;
