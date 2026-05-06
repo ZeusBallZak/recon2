@@ -462,7 +462,7 @@ function buildRocks(){
 }
 
 function buildVolcanoes(){
-  [{x:-90,z:-160,h:70,r:55},{x:160,z:80,h:40,r:32},{x:-200,z:200,h:55,r:42}].forEach(v=>{
+  [{x:-340,z:-120,h:70,r:55},{x:160,z:80,h:40,r:32},{x:-200,z:200,h:55,r:42}].forEach(v=>{
     const geo=new THREE.ConeGeometry(v.r,v.h,20,4,true),pa=geo.attributes.position;
     for(let i=0;i<pa.count;i++){pa.setX(i,pa.getX(i)+(Math.random()-.5)*4);pa.setZ(i,pa.getZ(i)+(Math.random()-.5)*4);}
     geo.computeVertexNormals();
@@ -1556,7 +1556,7 @@ function playEnemyShot(worldPos){
 //  Starts after AudioContext is created (on VR entry).
 // ════════════════════════════════════════════════════════════════
 const VOLCANO_POSITIONS=[
-  {x:-90,z:-160,h:70},{x:160,z:80,h:40},{x:-200,z:200,h:55}
+  {x:-340,z:-120,h:70},{x:160,z:80,h:40},{x:-200,z:200,h:55}
 ];
 let volcanoNodes=[];  // so we can stop them on audio suspend
 
