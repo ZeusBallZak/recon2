@@ -105,25 +105,64 @@ let damageSphere;
 let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0;
+// ── Combo multiplier ─────────────────────────────────────────────
+let comboCount=0, comboTimer=0, comboMult=1;
+// ── Boss system ──────────────────────────────────────────────────
+let bossEnemy=null, bossPhase=1;
+// ── Upgrade system ───────────────────────────────────────────────
+let pendingUpgrade=false, upgradePhase=false, upgradeCards=[];
+// ── Player energy shield ─────────────────────────────────────────
+let shieldActive=false, shieldDur=0, shieldRecharge=0, shieldMesh=null, xWasPressed=false;
+const SHIELD_DUR=3.0, SHIELD_RECHARGE=10.0;
+// ── Weapon degradation ───────────────────────────────────────────
+let weaponCondition={}; // type → 0..100
+// ── Day/night cycle ──────────────────────────────────────────────
+let sunLight=null, ambientLight=null, dayNightAngle=0;
+const DAY_NIGHT_PERIOD=600; // seconds (10 minutes)
+// ── Spatial audio tracks ─────────────────────────────────────────
+let enemyHumNodes={};  // enemyId → {osc,gain,pan}
+let musicNodes=null;
+// ── Impact craters ───────────────────────────────────────────────
+let craters=[];
 // ── Jump physics — Io surface gravity = 1/6 Earth (1.635 m/s²) ──
 let playerVY=0, isGrounded=true;
 const IO_GRAVITY=1.635;        // units/s²
 const JUMP_VEL=Math.sqrt(2*IO_GRAVITY*50); // launch speed to reach 50 units peak
 let enemies=[], pBolts=[], eBolts=[], explosions=[];
 let lavaLights=[], plumeList=[];
+let rockGroups=[];    // [{meshes:[lod0,lod1], lastLOD}] for distance-based LOD
+let volcanoLODs=[];   // [{meshes:[lod0,lod1,lod2], lastLOD}] per volcano
+// Volcano colliders — XZ centre, base radius, height, base world Y
+// Populated in buildVolcanoes() after terrain heights are known.
+let volcanoColliders=[];
 
 // ── Input state ────────────────────────────────────────────────────────
-let snapCooldown=0, leftGripHeld=false, aWasPressed=false;
+let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false;
+// ── Dash state ────────────────────────────────────────────────────
+let dashActive=false, dashRemaining=0, dashCooldown=0;
+const DASH_SPEED=50;    // units/s (covers 10 m in 0.2 s)
+const DASH_DIST=10;     // metres
+const DASH_DUR=DASH_DIST/DASH_SPEED; // 0.2 s
+const DASH_COOLDOWN=2.0;// seconds between dashes
+const DASH_STOP_R=2.0;  // enemy proximity that cancels dash
+const _dashDir=new THREE.Vector3(); // normalised forward direction of dash
 let fireCooldown=0, mfTimer=0;
 let kickZ=0, kickRX=0; // weapon recoil springs
 
 // ── Super Blast charge state ──────────────────────────────────────
 let triggerHeld=false, chargeTime=0;
-const CHARGE_MAX=8.0; // seconds to full charge
-let chargeOsc=null, chargeGain=null; // audio nodes for rising charge tone
-let shockwaves=[]; // active expanding ring meshes
-let chargeSphere=null, chargeBoids=null, chargeBoidData=[]; // charge VFX
-let waveBillboard=null; // active wave announcement mesh
+const CHARGE_MAX=8.0;
+let chargeOsc=null, chargeGain=null;
+let shockwaves=[];
+let chargeSphere=null, chargeBoids=null, chargeBoidData=[];
+let waveBillboard=null;
+
+// ── Weapon system ─────────────────────────────────────────────────────
+let currentWeapon='laser';
+let weaponAmmoMap={laser:Infinity};
+let grenadeProjs=[], rocketProjs=[], cannonProjs=[];
+let pickups=[];
+let flameCooldown=0;
 
 const SPEED=5.5, SPRINT=9.0, SENS_SNAP=Math.PI/4; // 45° snap turns
 
@@ -156,7 +195,7 @@ function getH(x,z){return fbm(x*.05,z*.05)*8+fbm(x*.2,z*.2)*2;}
 // exactly replicating what the vertex shader produces.
 // A 0.3-unit floor buffer ensures the camera (XR adds ~1.7 m head height
 // on top of dolly.y) sits at least 2 m above the visible terrain surface.
-const TERRAIN_GRID = 7.0;          // vertex spacing (700 / 100 segments)
+const TERRAIN_GRID = 10.0;         // vertex spacing (700 / 70 segments)
 const TERRAIN_FLOOR_BUFFER = 0.3;  // dolly offset → camera ≈ terrain + 2 m
 
 function getTerrainMeshHeight(x, z) {
@@ -364,8 +403,8 @@ function buildWorld(){
   buildRocks();
   buildVolcanoes();
   // Lighting
-  scene.add(new THREE.AmbientLight(0x201510,0.8));
-  const sun=new THREE.DirectionalLight(0xffe8cc,1.4);sun.position.set(100,300,-200);scene.add(sun);
+  ambientLight=new THREE.AmbientLight(0x201510,0.8);scene.add(ambientLight);
+  sunLight=new THREE.DirectionalLight(0xffe8cc,1.4);sunLight.position.set(100,300,-200);scene.add(sunLight);
   const jl=new THREE.DirectionalLight(0xcc6633,0.5);jl.position.set(-850,620,-1900);scene.add(jl);
 }
 
@@ -427,7 +466,7 @@ function buildTerrain(){
   //  • Raycaster.intersectObject() hits the true rendered surface — not a flat plane.
   //  • Player floor collision is 100% accurate with zero approximation error.
   // The fragment shader (coloring) is unchanged — it still uses vH, vPos, vN.
-  const segs=100;
+  const segs=70; // LOD: 9800 vs 20000 triangles (51% reduction), TERRAIN_GRID=10
   const geo=new THREE.PlaneGeometry(700,700,segs,segs);
   geo.rotateX(-Math.PI/2);  // lay flat in XZ plane
 
@@ -449,29 +488,66 @@ function buildTerrain(){
 }
 
 function buildRocks(){
+  // ── LOD levels per rock ──────────────────────────────────────────
+  // LOD0 (< 30 u): deformed IcosahedronGeometry  — ~40 triangles
+  // LOD1 (30–70 u): BoxGeometry                  — 12 triangles
+  // LOD2 (> 70 u):  invisible (sub-pixel at range)
   const rc=[0xc8a020,0xd46010,0x904010,0x504030,0xe0c060,0x806040,0x302010];
   for(let i=0;i<60;i++){
-    const x=(Math.random()-.5)*500,z=(Math.random()-.5)*500;
-    const h=getH(x,z),sz=.4+Math.random()**2*5;
-    const geo=new THREE.IcosahedronGeometry(sz,0),pa=geo.attributes.position;
+    const x=(Math.random()-.5)*500, z=(Math.random()-.5)*500;
+    const h=getH(x,z), sz=.4+Math.random()**2*5;
+    const col=rc[Math.floor(Math.random()*rc.length)];
+    const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85,metalness:.05});
+
+    // LOD 0 — deformed icosahedron (full detail)
+    const geo0=new THREE.IcosahedronGeometry(sz,0), pa=geo0.attributes.position;
     for(let v=0;v<pa.count;v++)pa.setXYZ(v,pa.getX(v)*(.65+Math.random()*.7),pa.getY(v)*(.65+Math.random()*.7),pa.getZ(v)*(.65+Math.random()*.7));
-    geo.computeVertexNormals();
-    const rock=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:rc[Math.floor(Math.random()*rc.length)],roughness:.85,metalness:.05}));
-    rock.position.set(x,h+sz*.5,z);rock.rotation.set(Math.random()*6,Math.random()*6,Math.random()*6);scene.add(rock);
+    geo0.computeVertexNormals();
+    const m0=new THREE.Mesh(geo0,mat);
+
+    // LOD 1 — plain box (12 triangles)
+    const m1=new THREE.Mesh(new THREE.BoxGeometry(sz*1.1,sz*.9,sz*1.05),mat.clone());
+    m1.visible=false;
+
+    const grp=new THREE.Group();
+    grp.add(m0,m1);
+    grp.position.set(x,h+sz*.5,z);
+    grp.rotation.set(Math.random()*6,Math.random()*6,Math.random()*6);
+    scene.add(grp);
+    rockGroups.push({grp,meshes:[m0,m1],lastLOD:-1});
   }
 }
 
 function buildVolcanoes(){
+  // ── LOD levels per volcano ───────────────────────────────────────
+  // LOD0 (< 100 u): ConeGeometry(r,h, 20 sides, 4 rows) — ~320 tris
+  // LOD1 (100–200u): ConeGeometry(r,h, 10 sides, 2 rows) — ~80  tris
+  // LOD2 (> 200 u):  ConeGeometry(r,h,  6 sides, 1 row)  — ~24  tris
+  const volcMat=new THREE.MeshStandardMaterial({color:0x201008,roughness:.95});
   [{x:-340,z:-120,h:70,r:55},{x:160,z:80,h:40,r:32},{x:-200,z:200,h:55,r:42}].forEach(v=>{
-    const geo=new THREE.ConeGeometry(v.r,v.h,20,4,true),pa=geo.attributes.position;
-    for(let i=0;i<pa.count;i++){pa.setX(i,pa.getX(i)+(Math.random()-.5)*4);pa.setZ(i,pa.getZ(i)+(Math.random()-.5)*4);}
-    geo.computeVertexNormals();
     const base=getH(v.x,v.z);
-    const m=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:0x201008,roughness:.95}));
-    m.position.set(v.x,base+v.h/2,v.z);scene.add(m);
+    const cy=base+v.h/2;
+
+    // Build LOD0 with vertex jitter (existing look)
+    const geo0=new THREE.ConeGeometry(v.r,v.h,20,4,true),pa=geo0.attributes.position;
+    for(let i=0;i<pa.count;i++){pa.setX(i,pa.getX(i)+(Math.random()-.5)*4);pa.setZ(i,pa.getZ(i)+(Math.random()-.5)*4);}
+    geo0.computeVertexNormals();
+    const m0=new THREE.Mesh(geo0,volcMat.clone());m0.position.set(v.x,cy,v.z);scene.add(m0);
+
+    // LOD1 — 10-sided, 2 rings
+    const m1=new THREE.Mesh(new THREE.ConeGeometry(v.r,v.h,10,2,true),volcMat.clone());
+    m1.position.set(v.x,cy,v.z);m1.visible=false;scene.add(m1);
+
+    // LOD2 — 6-sided, 1 ring
+    const m2=new THREE.Mesh(new THREE.ConeGeometry(v.r,v.h,6,1,true),volcMat.clone());
+    m2.position.set(v.x,cy,v.z);m2.visible=false;scene.add(m2);
+
+    volcanoLODs.push({meshes:[m0,m1,m2],lastLOD:-1});
+
     const ll=new THREE.PointLight(0xff5500,6+Math.random()*4,70+v.r);ll.position.set(v.x,base+v.h+2,v.z);scene.add(ll);
     lavaLights.push({light:ll,phase:Math.random()*Math.PI*2,base:6+Math.random()*4});
     buildPlume(v.x,base+v.h,v.z);
+    volcanoColliders.push({cx:v.x, cz:v.z, r:v.r, h:v.h, baseY:base});
   });
 }
 
@@ -676,37 +752,44 @@ function drawHUD(){
   // Divider
   ctx.fillStyle='rgba(48,190,255,0.18)';ctx.fillRect(12,96,W-24,1);
 
-  // WEAPON — unlimited plasma
-  ctx.fillStyle=cb;ctx.font='bold 14px monospace';ctx.textAlign='left';
-  ctx.fillText('∞  PLASMA',16,130);
+  // WEAPON name + ammo
+  const wDef=WEAPONS[currentWeapon];
+  const wAmmo=weaponAmmoMap[currentWeapon];
+  const ammoStr=wAmmo===Infinity?'∞':(wAmmo||0).toString();
+  ctx.fillStyle=`#${wDef.pickupCol.toString(16).padStart(6,'0')}`;
+  ctx.font='bold 13px monospace'; ctx.textAlign='left';
+  ctx.fillText(wDef.name, 16, 128);
+  ctx.font='bold 36px monospace';
+  ctx.fillText(ammoStr, 16, 170);
+  ctx.fillStyle='rgba(48,190,255,0.35)';
+  ctx.font='11px monospace';
+  ctx.fillText('WALK NEAR PICKUPS TO GRAB', 16, 210);
 
-  // SUPER BLAST charge bar
-  const chargeT=Math.min(chargeTime/CHARGE_MAX,1);
-  const chargeCol=chargeT>=1?'rgba(255,255,100,1)'
-    :`hsl(${180+chargeT*60},100%,${50+chargeT*30}%)`;
-  ctx.fillStyle=cd;ctx.font='bold 13px monospace';
-  ctx.fillText('SUPER BLAST',16,160);
-  ctx.fillStyle='rgba(18,20,28,0.85)';ctx.fillRect(16,168,310,14);
-  ctx.fillStyle=chargeCol;ctx.fillRect(16,168,310*chargeT,14);
-  if(chargeT>0&&chargeT<1){
-    ctx.fillStyle='rgba(255,255,255,0.6)';ctx.font='bold 11px monospace';
-    ctx.fillText(`${(chargeT*CHARGE_MAX).toFixed(1)}s / ${CHARGE_MAX}s`,16,185);
-  }else if(chargeT>=1){
-    ctx.fillStyle='rgba(255,255,100,0.9)';ctx.font='bold 12px monospace';
-    ctx.fillText('READY!',16,185);
-  }
-
-  // JUMP indicator
-  ctx.fillStyle=isGrounded?cd:'rgba(100,255,180,0.9)';
-  ctx.font='bold 12px monospace';ctx.textAlign='left';
-  ctx.fillText(isGrounded?'[A] SUPER JUMP':'↑ AIRBORNE',16,210);
-
-  // Wave / Score / Kills
+  // Wave / Score / Kills / Combo / Shield
   ctx.textAlign='right';ctx.font='bold 15px monospace';ctx.fillStyle=cd;
   ctx.fillText(`WAVE  ${wave}`,W-16,118);
   ctx.fillText(`SCORE ${score}`,W-16,140);
   ctx.fillText(`KILLS ${kills}`,W-16,162);
   ctx.fillText(`DRONES ${enemies.length}`,W-16,184);
+  if(comboCount>1){
+    ctx.fillStyle=`hsl(${40+comboCount*15},100%,65%)`;ctx.font='bold 13px monospace';
+    ctx.fillText(`×${comboMult} COMBO`,W-16,204);
+  }
+  if(shieldActive){
+    ctx.fillStyle='rgba(80,140,255,.9)';ctx.font='bold 11px monospace';
+    ctx.fillText(`[SHIELD] ${shieldDur.toFixed(1)}s`,W-16,220);
+  }else if(shieldRecharge>0){
+    ctx.fillStyle='rgba(0,100,255,.4)';ctx.font='11px monospace';
+    ctx.fillText(`shld rdy in ${Math.ceil(shieldRecharge)}s`,W-16,220);
+  }
+  // Boss health bar
+  if(bossEnemy&&bossEnemy.userData){
+    const bHP=bossEnemy.userData.hp/bossEnemy.userData.maxHp;
+    ctx.fillStyle='rgba(255,0,0,.7)';ctx.font='bold 11px monospace';ctx.textAlign='center';
+    ctx.fillText('BOSS',W/2,232);
+    ctx.fillStyle='rgba(40,0,0,.8)';ctx.fillRect(W/2-80,235,160,10);
+    ctx.fillStyle=`hsl(${bHP*12},100%,50%)`;ctx.fillRect(W/2-80,235,160*bHP,10);
+  }
 
   hudTexture.needsUpdate=true;
 }
@@ -742,21 +825,23 @@ function buildControllers(){
     ctrl.addEventListener('selectstart',()=>{
       if(ctrl===rightCtrl){
         if(gameOverState){ restartGame(); return; }
-        if(gameActive){ triggerHeld=true; startCharge(); }
+        if(gameActive){
+          triggerHeld=true;
+          if(currentWeapon!=='flame') startCharge(); // flame uses hold-fire not charge
+        }
       }
     });
 
     ctrl.addEventListener('selectend',()=>{
       if(ctrl===rightCtrl && gameActive && triggerHeld){
         triggerHeld=false;
-        if(chargeTime>=CHARGE_MAX){
-          // blast already fired at 10s — just stop audio
+        if(currentWeapon==='flame'){
+          stopCharge(); chargeTime=0; // no charge for flame
+        } else if(chargeTime>=CHARGE_MAX){
           stopCharge();
         } else if(chargeTime<0.25){
-          // quick tap = normal shot
           stopCharge(); fireWeapon();
         } else {
-          // partial charge released — cancel, no shot
           stopCharge();
         }
         chargeTime=0;
@@ -768,6 +853,7 @@ function buildControllers(){
 function onRightConnected(){
   if(!weaponGroup||!rightGrip)return;
   rightGrip.add(weaponGroup);
+  buildMuzzleCone();
 
   // Aim ray — child of weaponGroup so it inherits the barrel's WEAPON_PITCH
   // rotation and sits exactly along the firing trajectory.
@@ -826,7 +912,8 @@ function enterVR(){
   }).then(session=>{
     renderer.xr.setSession(session);
     initAudio();
-    setTimeout(startVolcanoAmbience, 600); // slight delay for AudioContext to warm up
+    setTimeout(startVolcanoAmbience, 600);
+    setTimeout(()=>{startMusic();buildShieldMesh();}, 800); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
     document.getElementById('overlay').style.display='none';
     startGame();
@@ -841,6 +928,8 @@ function stopAllAudio(){
   if(!audioCtx)return;
   for(const p of eBolts) stopBoltBuzz(p);
   stopVolcanoAmbience();
+  stopAllEnemyHums();
+  stopMusic();
   audioCtx.suspend().catch(()=>{});
 }
 
@@ -861,10 +950,23 @@ function startGame(){
   gameActive=true;gameOverState=false;
   resumeAudioIfNeeded();
   setTimeout(startVolcanoAmbience,300);
+  setTimeout(startMusic,800);
+  comboCount=0;comboTimer=0;comboMult=1;
+  bossEnemy=null;
+  pendingUpgrade=false;upgradePhase=false;
+  clearUpgradeCards();
+  stopAllEnemyHums();
+  craters.forEach(c=>scene.remove(c.mesh));craters=[];
+  weaponCondition={};
+  setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
-  playerVY=0;isGrounded=true;
+  playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;
+  currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
   fireCooldown=0;
+  grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
+  pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
+  setTimeout(spawnInitialPickups, 1200);
   dolly.position.set(0, getTerrainMeshHeight(0,0), 0);
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
   setTimeout(()=>showWaveBanner(1), 800);  // slight delay so VR has settled
@@ -917,23 +1019,31 @@ function drainHaptics(){}
 
 function fireWeapon(){
   if(!rightGrip||fireCooldown>0||!gameActive)return;
-  fireCooldown=.11;
+  const def=WEAPONS[currentWeapon];
+  if(def.ammo!==Infinity&&(weaponAmmoMap[currentWeapon]||0)<=0) return;
+  fireCooldown=def.rate;
+  if(def.ammo!==Infinity) weaponAmmoMap[currentWeapon]--;
   drawHUD();
 
   // Muzzle flash
   muzzleLight.intensity=7;mfTimer=.068;muzzleSphere.visible=true;
   kickZ=.05;kickRX=-.14;
-  playPlayerShot();
-  haptic('right', 1.0, 120);  // full-power firing kick
+  haptic('right',1.0,120);
 
-  // Bolt origin = muzzle world position
-  const mPos=new THREE.Vector3();muzzleSphere.getWorldPosition(mPos);
-  // Bolt direction = barrel's own -Z axis in world space.
-  // weaponGroup already contains the WEAPON_PITCH rotation relative to the grip,
-  // so this matches the barrel angle exactly rather than the raw grip direction.
-  const bDir=new THREE.Vector3(0,0,-1).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
+  triggerMuzzleCone(currentWeapon);
+  degradeWeapon();
 
-  spawnBolt(mPos,bDir,false);
+  // Dispatch
+  if(currentWeapon==='laser')   { playPlayerShot(); fireLaser(); }
+  else if(currentWeapon==='shotgun') { playPlayerShot(); fireShotgun(); }
+  else if(currentWeapon==='grenade'){ playPlayerShot(); fireGrenade(); }
+  else if(currentWeapon==='saber')  { fireSaber(); }
+  else if(currentWeapon==='scatter'){ playPlayerShot(); fireScatter(); }
+  else if(currentWeapon==='rail')   { fireRail(); }
+  else if(currentWeapon==='rocket') { playPlayerShot(); fireRocket(); }
+  else if(currentWeapon==='dual')   { playPlayerShot(); fireDual(); }
+  else if(currentWeapon==='flame')  { fireFlame(); }
+  else if(currentWeapon==='cannon') { fireCannon(); }
 }
 
 function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
@@ -1057,6 +1167,20 @@ function spawnEnemy(){
 
   const hoverH=type==='heavy'?2.5:3.5;
   g.position.set(x,h+hoverH,z);
+
+  // ── LOD body meshes ─────────────────────────────────────────────
+  // LOD0 = existing `body` (8-face deformed octahedron, already added)
+  // LOD1 = sphere 6 segments — ~36 triangles, no rings/eye
+  // LOD2 = sphere 4×3   — ~12 triangles
+  // LOD3 = box          — 12 triangles, pure flat colour
+  const lodMat=new THREE.MeshStandardMaterial({color:T.bodyColor,roughness:.35,metalness:.75,emissive:T.emissive,emissiveIntensity:T.emissiveInt*.6});
+  const sz=1.1*T.scale;
+  const lod1=new THREE.Mesh(new THREE.SphereGeometry(sz*.85,6,5), lodMat);
+  const lod2=new THREE.Mesh(new THREE.SphereGeometry(sz*.85,4,3), lodMat.clone());
+  const lod3=new THREE.Mesh(new THREE.BoxGeometry(sz*1.2,sz*1.2,sz*1.2), lodMat.clone());
+  lod1.visible=false; lod2.visible=false; lod3.visible=false;
+  g.add(lod1); g.add(lod2); g.add(lod3);
+
   g.userData={
     type, hp:T.hp, maxHp:T.hp,
     speed:T.speedBase+Math.random()*1.5+wave*T.speedWave,
@@ -1064,9 +1188,13 @@ function spawnEnemy(){
     shootDelay:T.shootDelay, shootRand:T.shootRand,
     boltSpeed:T.boltSpeed, boltDmg:T.boltDmg,
     hoverPhase:Math.random()*Math.PI*2, hoverH,
-    rings,eye,eL,body,isDying:false
+    rings,eye,eL,body,isDying:false,
+    lodBodies:[body,lod1,lod2,lod3], lastLOD:-1, // -1 forces initial switch
+    baseLightInt:T.lightInt
   };
   scene.add(g);enemies.push(g);
+  startEnemyHum(g);
+  assignFlankAngles();
 }
 
 const _camWP=new THREE.Vector3();
@@ -1079,9 +1207,27 @@ function updateEnemies(dt){
     e.position.y=getH(e.position.x,e.position.z)+ud.hoverH+Math.sin(ud.hoverPhase)*.6;
     const toP=new THREE.Vector3().subVectors(_camWP,e.position),dist=toP.length();
     e.rotation.y=Math.atan2(toP.x,toP.z);
-    if(dist>10)e.position.addScaledVector(toP.clone().normalize(),ud.speed*dt);
-    for(const r of ud.rings){r.rotation.x+=dt*1.2;r.rotation.y+=dt*.8;}
-    ud.eL.intensity=(.8+.2*Math.sin(ud.hoverPhase*3))*1.8;
+
+    // ── LOD switching — only triggers on level change ──────────────
+    const newLOD=dist<25?0:dist<60?1:dist<120?2:3;
+    if(newLOD!==ud.lastLOD){
+      ud.lastLOD=newLOD;
+      // Swap which body mesh is visible
+      ud.lodBodies.forEach((b,i)=>{ b.visible=(i===newLOD); });
+      // Rings: only render at close range (most expensive element per enemy)
+      ud.rings.forEach(r=>{ r.visible=(newLOD===0); });
+      // Eye: visible at LOD 0–2, hidden only at extreme distance
+      if(ud.eye) ud.eye.visible=(newLOD<=2);
+      // Light: full at 0, dim at 1, off at 2–3
+      if(ud.eL) ud.eL.intensity=newLOD===0?ud.baseLightInt:newLOD===1?ud.baseLightInt*.35:0;
+    }
+
+    // Animate rings and light flicker only when close enough to matter
+    if(newLOD===0){
+      for(const r of ud.rings){r.rotation.x+=dt*1.2;r.rotation.y+=dt*.8;}
+      ud.eL.intensity=(.8+.2*Math.sin(ud.hoverPhase*3))*ud.baseLightInt;
+    }
+    if(dist>10) updateEnemyAI(e,ud,toP,dist,dt);
     ud.shootTimer-=dt;
     if(ud.shootTimer<=0&&dist<70){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
@@ -1094,10 +1240,14 @@ function updateEnemies(dt){
   for(const e of dead){
     killExplosion(e.position.clone());scene.remove(e);
     playExplosionSound(e.position.clone());
+    stopEnemyHum(e);
     enemies=enemies.filter(x=>x!==e);
     kills++;
-    const typeScore={scout:50,standard:100,heavy:300};
-    score+=(typeScore[e.userData.type]||100)*wave;drawHUD();
+    registerKill();
+    triggerKillFlash(WEAPONS[currentWeapon]?.col??0xffffff);
+    if(e===bossEnemy){bossEnemy=null;health=Math.min(maxHealth,health+40);speak('Boss defeated');drawHUD();}
+    const typeScore={scout:50,standard:100,heavy:300,boss:1000};
+    score+=(typeScore[e.userData.type]||100)*wave*comboMult;drawHUD();
   }
 }
 
@@ -1169,7 +1319,10 @@ function updateBolts(dt){
         }
         if(!hit&&p.userData.age>2.5)rem.push(p);
       }else{
-        if(p.position.distanceTo(_camWP)<1.5){takeDamage(p.userData.dmg||10);rem.push(p);}
+        if(p.position.distanceTo(_camWP)<1.5){
+          if(checkShieldBlock(p.position)){rem.push(p);} // bolt absorbed by shield
+          else{takeDamage(p.userData.dmg||10);rem.push(p);}
+        }
       }
     }
     rem.forEach(p=>{ if(!isPlayer)stopBoltBuzz(p); scene.remove(p); });
@@ -1193,7 +1346,11 @@ function updatePlayer(dt){
     if(src.handedness==='left'){
       if(Math.abs(ax[2])>.15)moveX=ax[2];
       if(Math.abs(ax[3])>.15)moveZ=ax[3];
-      leftGripHeld=gp.buttons[1]?.pressed??false; // left grip = sprint
+      leftGripHeld=gp.buttons[1]?.pressed??false;
+      // X button (left controller, index 4): activate energy shield
+      const xNow=gp.buttons[4]?.pressed??false;
+      if(xNow&&!xWasPressed)activateShield();
+      xWasPressed=xNow;
     }
 
     if(src.handedness==='right'){
@@ -1211,6 +1368,23 @@ function updatePlayer(dt){
         drawHUD();
       }
       aWasPressed=aNow;
+
+      // B button (index 5): 10-metre forward dash
+      // Dash stops early if an enemy is within DASH_STOP_R metres ahead.
+      const bNow=gp.buttons[5]?.pressed??false;
+      if(bNow&&!bWasPressed&&!dashActive&&dashCooldown<=0&&gameActive){
+        // Capture camera forward projected onto XZ at press time
+        camera.getWorldDirection(_dashDir);
+        _dashDir.y=0;
+        if(_dashDir.lengthSq()<.0001)_dashDir.set(0,0,-1);
+        _dashDir.normalize();
+        dashActive=true;
+        dashRemaining=DASH_DUR;
+        dashCooldown=DASH_COOLDOWN;
+        haptic('right',1.0,80);haptic('left',0.6,60);
+        spawnLandingDust(new THREE.Vector3(dolly.position.x,dolly.position.y,dolly.position.z));
+      }
+      bWasPressed=bNow;
     }
   }
   if(snapCooldown>0)snapCooldown-=dt;
@@ -1223,8 +1397,51 @@ function updatePlayer(dt){
   const spd=leftGripHeld?SPRINT:SPEED;
   dolly.position.addScaledVector(_fwd,-moveZ*spd*dt);
   dolly.position.addScaledVector(_rgt, moveX*spd*dt);
+  updateFootsteps(dt,moveX,moveZ);
+  // ── Dash tick ───────────────────────────────────────────────────
+  dashCooldown=Math.max(0,dashCooldown-dt);
+  if(dashActive){
+    // Check for enemy within DASH_STOP_R in front — stop before impact
+    let blocked=false;
+    const dashFront=dolly.position.clone().addScaledVector(_dashDir, DASH_STOP_R);
+    for(const e of enemies){
+      if(dashFront.distanceTo(e.position)<DASH_STOP_R+1.5){blocked=true;break;}
+    }
+    if(blocked){
+      dashActive=false;dashRemaining=0;
+      haptic('right',1.0,150);haptic('left',0.8,120); // collision thud
+    }else{
+      const step=Math.min(dashRemaining,dt)*DASH_SPEED;
+      dolly.position.addScaledVector(_dashDir,step);
+      dashRemaining-=dt;
+      if(dashRemaining<=0){
+        dashActive=false;dashRemaining=0;
+        haptic('right',0.5,60); // soft stop
+      }
+    }
+  }
+
   dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
   dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
+
+  // ── Volcano collision ────────────────────────────────────────────────
+  // Each volcano is a cone. At the player's current height above the base,
+  // the cone radius = r_base × (1 − height_above_base / cone_height).
+  // If the player's XZ is inside that radius we push them radially outward.
+  const PLAYER_R=1.2; // player capsule radius in world units
+  for(const vc of volcanoColliders){
+    const dx=dolly.position.x-vc.cx, dz=dolly.position.z-vc.cz;
+    const dist2d=Math.sqrt(dx*dx+dz*dz);
+    const heightAboveBase=Math.max(0, dolly.position.y-vc.baseY);
+    const coneR=vc.r*Math.max(0, 1-(heightAboveBase/vc.h));
+    const minDist=coneR+PLAYER_R;
+    if(dist2d<minDist&&dist2d>0.001){
+      // Push player out to the cone surface along the XZ direction
+      const nx=dx/dist2d, nz=dz/dist2d;
+      dolly.position.x=vc.cx+nx*minDist;
+      dolly.position.z=vc.cz+nz*minDist;
+    }
+  }
 
   // ── Floor collision via raycaster ───────────────────────────────────
   // Terrain vertices are now displaced on the CPU (not the GPU shader),
@@ -1314,10 +1531,20 @@ function updateLava(){
 
 // ── Wave escalation ────────────────────────────────────────────────
 function updateWaves(now){
-  if(!gameActive)return;
+  if(!gameActive||upgradePhase)return;
   const maxE=Math.min(12, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
   if(enemies.length<maxE&&now-lastSpawn>spawnI){spawnEnemy();lastSpawn=now;}
-  if(score>=waveThresh&&wave<12){wave++;waveThresh=score+500*wave;showWaveBanner(wave);drawHUD();}
+  if(score>=waveThresh&&wave<12){
+    wave++;waveThresh=score+500*wave;
+    showWaveBanner(wave);drawHUD();
+    // Boss every 5th wave
+    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,1500);
+    // Pending upgrade: show cards when all enemies cleared
+    pendingUpgrade=true;
+    speak('Wave '+wave);
+  }
+  // Show upgrade cards when pending and battlefield is clear
+  if(pendingUpgrade&&!upgradePhase&&enemies.length===0) showUpgradeCards();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1712,6 +1939,534 @@ async function drawGameOverHUD(){
 
 
 // ════════════════════════════════════════════════════════════════
+//  WEAPON SYSTEM — 10 weapons, pickups, fire mechanics
+// ════════════════════════════════════════════════════════════════
+
+const WEAPONS={
+  laser:  {name:'LASER RIFLE',    ammo:Infinity, rate:.11,  col:0x00aaff, pickupCol:0x0088ff},
+  shotgun:{name:'PLASMA SHOTGUN', ammo:40,       rate:.60,  col:0xff6600, pickupCol:0xff4400},
+  grenade:{name:'GRENADE LAUNCH', ammo:15,       rate:.90,  col:0x44ff44, pickupCol:0x22cc22},
+  saber:  {name:'VOLT SABER',     ammo:Infinity, rate:.35,  col:0xffff44, pickupCol:0xffdd00},
+  scatter:{name:'SCATTER BLSTR',  ammo:20,       rate:.80,  col:0xff44ff, pickupCol:0xcc22cc},
+  rail:   {name:'RAIL SNIPER',    ammo:12,       rate:1.40, col:0x00ffff, pickupCol:0x00cccc},
+  rocket: {name:'HOMING ROCKETS', ammo:8,        rate:1.80, col:0xff3300, pickupCol:0xff2200},
+  dual:   {name:'DUAL ION GUNS',  ammo:100,      rate:.08,  col:0xffcc00, pickupCol:0xffaa00},
+  flame:  {name:'FLAMETHROWER',   ammo:80,       rate:.12,  col:0xff8800, pickupCol:0xff6600},
+  cannon: {name:'VOID CANNON',    ammo:5,        rate:3.00, col:0xffffff, pickupCol:0xaaaaff},
+};
+
+// ── Weapon geometry builder ───────────────────────────────────────
+function buildWeaponGeometry(type, parent){
+  const mk=(g,m,x=0,y=0,z=0,rx=0,ry=0,rz=0)=>{
+    const ms=new THREE.Mesh(g,m);ms.position.set(x,y,z);
+    if(rx||ry||rz)ms.rotation.set(rx,ry,rz);parent.add(ms);return ms;};
+  const mat=(col,rough=.3,metal=.8,emCol=null,emInt=0)=>{
+    const m=new THREE.MeshStandardMaterial({color:col,roughness:rough,metalness:metal});
+    if(emCol){m.emissive=new THREE.Color(emCol);m.emissiveIntensity=emInt;}return m;};
+  const glow=(col,op=.4)=>new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:op,blending:THREE.AdditiveBlending,depthWrite:false});
+
+  if(type==='shotgun'){
+    // Wide flat receiver + 5 barrels
+    mk(new THREE.BoxGeometry(.24,.07,.28),mat(0x1a0a00,.5,.9),0,0,0);
+    mk(new THREE.BoxGeometry(.22,.04,.10),mat(0x0a0500,.4,.7),0,-.055,.09);
+    for(let i=-2;i<=2;i++) mk(new THREE.CylinderGeometry(.012,.012,.22,6),mat(0x220800,.2,.95),i*.04,.035,-.22,Math.PI/2);
+    mk(new THREE.BoxGeometry(.06,.08,.055),mat(0x0c0a08,.8,.1),0,-.07,.04);
+    mk(new THREE.TorusGeometry(.025,.005,4,12,Math.PI),mat(0x1a0800),0,-.04,.005,Math.PI/2);
+    parent.add(new THREE.PointLight(new THREE.Color(WEAPONS.shotgun.pickupCol),1.5,5));
+  }
+  else if(type==='grenade'){
+    // Fat barrel + drum mag + body
+    mk(new THREE.CylinderGeometry(.04,.04,.30,10),mat(0x283a1a,.7,.6),0,.01,-.18,Math.PI/2);
+    mk(new THREE.CylinderGeometry(.055,.04,.10,10),mat(0x1e2e12,.6,.5),0,.01,-.10,Math.PI/2);
+    mk(new THREE.BoxGeometry(.10,.07,.18),mat(0x243218,.6,.5));
+    mk(new THREE.CylinderGeometry(.04,.04,.07,16),mat(0x1a2610,.5,.4),0,-.055,.02,0,0,Math.PI/6);// drum
+    mk(new THREE.BoxGeometry(.03,.065,.04),mat(0x111a09,.9,.1),0,-.065,.06);// grip
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.grenade.pickupCol),1.5,5);parent.add(l);
+  }
+  else if(type==='saber'){
+    // Volt Saber — Light Saber × Zelda Master Sword hybrid
+    // Glowing blade (long, thin, emissive white-cyan)
+    const blade=mk(new THREE.CylinderGeometry(.018,.022,.70,8),new THREE.MeshStandardMaterial({color:0xaaffff,emissive:0x44ffff,emissiveIntensity:4.5,roughness:0,metalness:.1}),0,.45,0);
+    mk(new THREE.CylinderGeometry(.024,.016,.70,8),glow(0x00ffff,.5),0,.45,0);// outer glow
+    // Master Sword crossguard (three-wing Zelda style)
+    mk(new THREE.BoxGeometry(.18,.025,.030),mat(0xccaa22,.2,.95,0xaacc44,1),0,.09,0); // main bar
+    mk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1),-.09,.09,.015);// left wing
+    mk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1), .09,.09,.015);// right wing
+    // Handle
+    mk(new THREE.CylinderGeometry(.018,.022,.16,8),mat(0x442200,.8,.2),0,-.005,0);
+    for(let i=0;i<5;i++) mk(new THREE.TorusGeometry(.022,.004,5,12),mat(0xccaa22,.2,.9),0,-.01+i*.028,0,Math.PI/2);
+    // Triforce pommel gem
+    mk(new THREE.OctahedronGeometry(.028),new THREE.MeshStandardMaterial({color:0xffdd00,emissive:0xffaa00,emissiveIntensity:3}),0,-.09,0);
+    const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);parent.add(l);
+  }
+  else if(type==='scatter'){
+    // Icosahedron body + 8 spike barrels
+    mk(new THREE.IcosahedronGeometry(.12,0),mat(0x220022,.3,.8,0xcc22cc,1.5));
+    const dirs=[[0,0,-1],[0,0,1],[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[.7,.7,0],[.7,-.7,0]];
+    dirs.forEach(d=>{
+      const b=new THREE.Mesh(new THREE.CylinderGeometry(.01,.015,.18,5),mat(0x440044,.2,.9,0xff44ff,.8));
+      b.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(...d).normalize());
+      b.position.set(d[0]*.13,d[1]*.13,d[2]*.13);parent.add(b);
+    });
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.scatter.pickupCol),2,6);parent.add(l);
+  }
+  else if(type==='rail'){
+    // Very long barrel + scope + bipod
+    mk(new THREE.CylinderGeometry(.010,.010,.60,8),mat(0x0a1520,.2,.98),0,.01,-.32,Math.PI/2);// barrel
+    mk(new THREE.BoxGeometry(.07,.05,.28),mat(0x0c1520,.3,.9));// body
+    mk(new THREE.CylinderGeometry(.016,.016,.12,10),mat(0x1a2530,.4,.8),0,.05,.02,Math.PI/2);// scope
+    mk(new THREE.CylinderGeometry(.012,.012,.004,10),mat(0x002244,.1,.3,0x00ffff,2),0,.05,-.04,Math.PI/2);// scope glass
+    // Bipod
+    [-1,1].forEach(s=>{ const leg=new THREE.Mesh(new THREE.CylinderGeometry(.004,.004,.09,4),mat(0x111a20,.5,.7));leg.position.set(s*.04,-.05,.12);leg.rotation.z=s*.35;parent.add(leg);});
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.rail.pickupCol),2,6);parent.add(l);
+  }
+  else if(type==='rocket'){
+    // Large launcher tube + grip + sight
+    mk(new THREE.CylinderGeometry(.06,.06,.38,12),mat(0x1a0800,.5,.7),0,.01,-.12,Math.PI/2);// tube
+    mk(new THREE.CylinderGeometry(.066,.066,.02,12),mat(0x330a00,.4,.6),0,.01,.06,Math.PI/2);// front ring
+    mk(new THREE.BoxGeometry(.09,.08,.18),mat(0x120600,.6,.5),0,-.02,.01);// body
+    mk(new THREE.BoxGeometry(.025,.10,.035),mat(0x0e0500,.8,.2),0,-.08,.04);// grip
+    mk(new THREE.BoxGeometry(.06,.02,.06),mat(0x1a0800,.4,.8),0,.06,.01);// sight bar
+    mk(new THREE.CylinderGeometry(.006,.006,.02,5),mat(0x330a00,.3,.9),0,.075,.01,Math.PI/2);// sight
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.rocket.pickupCol),2.5,7);parent.add(l);
+  }
+  else if(type==='dual'){
+    // Two compact pistols side by side
+    [-1,1].forEach(s=>{
+      const ox=s*.065;
+      mk(new THREE.BoxGeometry(.06,.05,.14),mat(0x1a1500,.3,.9),ox,0,0);
+      mk(new THREE.CylinderGeometry(.010,.010,.14,6),mat(0x0e0c00,.2,.95),ox,.02,-.10,Math.PI/2);
+      mk(new THREE.BoxGeometry(.025,.07,.04),mat(0x0e0c00,.8,.2),ox,-.055,.035);
+      const l=new THREE.PointLight(new THREE.Color(WEAPONS.dual.pickupCol),1,4);l.position.set(ox,0,0);parent.add(l);
+    });
+  }
+  else if(type==='flame'){
+    // Round tank + bent nozzle tube
+    mk(new THREE.CylinderGeometry(.075,.075,.20,12),mat(0x3a2800,.6,.6),-.04,.01,.02);// tank
+    mk(new THREE.CylinderGeometry(.055,.055,.20,12),mat(0x2a1e00,.5,.5), .04,.01,.02);// tank2
+    mk(new THREE.BoxGeometry(.12,.04,.06),mat(0x1e1400,.5,.5),0,.05,-.06);// connector
+    mk(new THREE.CylinderGeometry(.018,.022,.18,8),mat(0x221000,.3,.7),.04,.01,-.16,Math.PI/2);// nozzle tube
+    mk(new THREE.ConeGeometry(.028,.04,8),mat(0xff6600,.4,.3,0xff4400,3),.04,.01,-.26,Math.PI/2);// nozzle tip
+    mk(new THREE.BoxGeometry(.025,.085,.04),mat(0x0e0a00,.8,.2),0,-.06,.02);// grip
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.flame.pickupCol),2,6);l.position.set(0,0,-.22);parent.add(l);
+  }
+  else if(type==='cannon'){
+    // Massive squat cylinder + 4 fins + dark glow
+    mk(new THREE.CylinderGeometry(.09,.12,.22,14),mat(0x06020c,.4,.6,.440066,2),0,0,0,Math.PI/2);// barrel
+    for(let i=0;i<4;i++){
+      const fin=new THREE.Mesh(new THREE.BoxGeometry(.04,.18,.008),mat(0x0c0818,.3,.7));
+      fin.position.set(Math.cos(i*Math.PI/2)*.1,Math.sin(i*Math.PI/2)*.1,-.04);parent.add(fin);
+    }
+    mk(new THREE.BoxGeometry(.12,.10,.18),mat(0x08040f,.5,.5));// body
+    mk(new THREE.BoxGeometry(.04,.09,.05),mat(0x060210,.8,.2),0,-.09,.04);// grip
+    mk(new THREE.SphereGeometry(.026,8,6),new THREE.MeshStandardMaterial({color:0xaaaaff,emissive:0x6666ff,emissiveIntensity:4}),0,0,.12);// muzzle gem
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.cannon.pickupCol),3,8);parent.add(l);
+  }
+}
+
+// ── Equip weapon: swap geometry on rightGrip weaponGroup ─────────
+function equipWeapon(type){
+  currentWeapon=type;
+  const def=WEAPONS[type];
+  if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
+  // Partial refill on pickup if already owned
+  else if(def.ammo!==Infinity) weaponAmmoMap[type]=Math.min(def.ammo, (weaponAmmoMap[type]||0)+def.ammo);
+
+  if(!weaponGroup)return;
+  // Clear current geometry
+  while(weaponGroup.children.length) weaponGroup.remove(weaponGroup.children[0]);
+  energyCells=[];
+
+  if(type==='laser'){
+    // Rebuild the original laser rifle
+    buildWeaponModel();
+    // Re-attach to rightGrip
+    if(rightGrip){ rightGrip.remove(weaponGroup); rightGrip.add(weaponGroup); }
+  } else {
+    buildWeaponGeometry(type, weaponGroup);
+    // Re-add muzzle flash nodes
+    weaponGroup.add(muzzleLight);
+    weaponGroup.add(muzzleSphere);
+    weaponGroup.scale.setScalar(1.5);
+    weaponGroup.position.set(.01,.108,-.135);
+    weaponGroup.rotation.x=WEAPON_PITCH;
+  }
+  drawHUD();
+}
+
+// ── Pickup spawn & management ─────────────────────────────────────
+const PICKUP_TYPES=['shotgun','grenade','saber','scatter','rail','rocket','dual','flame','cannon'];
+
+function buildPickupMesh(type){
+  const g=new THREE.Group();
+  buildWeaponGeometry(type, g);
+  g.scale.setScalar(0.55); // smaller for pickup
+  // Glow ring on ground
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(.30,.025,6,32),
+    new THREE.MeshBasicMaterial({color:WEAPONS[type].pickupCol,transparent:true,opacity:.5,blending:THREE.AdditiveBlending,depthWrite:false}));
+  ring.rotation.x=Math.PI/2; ring.position.y=-.45; g.add(ring);
+  return g;
+}
+
+function spawnPickup(type, x, z){
+  if(!terrainMesh) return;
+  floorRay.set(new THREE.Vector3(x,80,z),new THREE.Vector3(0,-1,0));
+  const hits=floorRay.intersectObject(terrainMesh,false);
+  const groundY=hits.length?hits[0].point.y:getH(x,z);
+  const mesh=buildPickupMesh(type);
+  mesh.position.set(x, groundY+1.0, z); // 1 m above ground
+  scene.add(mesh);
+  pickups.push({type, mesh, age:0});
+}
+
+function spawnInitialPickups(){
+  const positions=[
+    {x:60,z:-60},{x:-70,z:50},{x:100,z:120},{x:-120,z:-80},{x:50,z:150},
+    {x:-160,z:40},{x:130,z:-110},{x:-80,z:130},{x:30,z:-140},{x:-140,z:-140}
+  ];
+  PICKUP_TYPES.forEach((t,i)=>spawnPickup(t, positions[i].x, positions[i].z));
+}
+
+function updatePickups(dt){
+  const t=clock.elapsedTime;
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const rem=[];
+  for(const p of pickups){
+    p.age+=dt;
+    p.mesh.rotation.y+=dt*1.2;
+    p.mesh.position.y+=Math.sin(t*2+p.age)*0.0008;// gentle bob
+    // Proximity pickup: 2.5 units from camera world pos
+    if(camPos.distanceTo(p.mesh.position)<2.5){
+      equipWeapon(p.type);
+      playPickupSound(p.type);
+      haptic('right',.8,120);
+      scene.remove(p.mesh);
+      rem.push(p);
+      // Respawn same weapon type at new location after 25s
+      const px=(Math.random()-.5)*280, pz=(Math.random()-.5)*280;
+      setTimeout(()=>{ if(gameActive)spawnPickup(p.type,px,pz); },25000);
+    }
+  }
+  pickups=pickups.filter(x=>!rem.includes(x));
+}
+
+// ── Pickup sound — quick rising tone ─────────────────────────────
+function playPickupSound(type){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  const o=ctx.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(400,t); o.frequency.exponentialRampToValueAtTime(1200,t+.18);
+  const g=ctx.createGain(); g.gain.setValueAtTime(.4,t); g.gain.exponentialRampToValueAtTime(.001,t+.22);
+  o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t+.25);
+}
+
+// ── Saber swing sound ─────────────────────────────────────────────
+function playSwingSound(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  const o=ctx.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(900,t); o.frequency.exponentialRampToValueAtTime(200,t+.22);
+  const g=ctx.createGain(); g.gain.setValueAtTime(.35,t); g.gain.exponentialRampToValueAtTime(.001,t+.25);
+  const o2=ctx.createOscillator(); o2.type='sawtooth';
+  o2.frequency.setValueAtTime(1800,t); o2.frequency.exponentialRampToValueAtTime(400,t+.18);
+  const g2=ctx.createGain(); g2.gain.setValueAtTime(.12,t); g2.gain.exponentialRampToValueAtTime(.001,t+.20);
+  o.connect(g); o2.connect(g2); g.connect(ctx.destination); g2.connect(ctx.destination);
+  o.start(t); o2.start(t); o.stop(t+.28); o2.stop(t+.22);
+}
+
+// ── Rail fire sound — electric crack ────────────────────────────
+function playRailSound(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  const nb=ctx.createBuffer(1,ctx.sampleRate*.1,ctx.sampleRate);
+  const nd=nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=Math.random()*2-1;
+  const ns=ctx.createBufferSource(); ns.buffer=nb;
+  const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=2000;
+  const g=ctx.createGain(); g.gain.setValueAtTime(.6,t); g.gain.exponentialRampToValueAtTime(.001,t+.1);
+  ns.connect(hp); hp.connect(g); g.connect(ctx.destination); ns.start(t); ns.stop(t+.12);
+  const o=ctx.createOscillator(); o.type='square';
+  o.frequency.setValueAtTime(800,t); o.frequency.exponentialRampToValueAtTime(80,t+.08);
+  const g2=ctx.createGain(); g2.gain.setValueAtTime(.4,t); g2.gain.exponentialRampToValueAtTime(.001,t+.1);
+  o.connect(g2); g2.connect(ctx.destination); o.start(t); o.stop(t+.1);
+}
+
+// ── Cannon fire sound — deep thud ────────────────────────────────
+function playCannonSound(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  const o=ctx.createOscillator(); o.type='sine';
+  o.frequency.setValueAtTime(55,t); o.frequency.exponentialRampToValueAtTime(18,t+.5);
+  const g=ctx.createGain(); g.gain.setValueAtTime(1.2,t); g.gain.exponentialRampToValueAtTime(.001,t+.6);
+  o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t+.65);
+}
+
+// ── Flame fire sound — hiss burst ────────────────────────────────
+function playFlameSound(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  const nb=ctx.createBuffer(1,ctx.sampleRate*.15,ctx.sampleRate);
+  const nd=nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=Math.random()*2-1;
+  const ns=ctx.createBufferSource(); ns.buffer=nb;
+  const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1200; bp.Q.value=.4;
+  const g=ctx.createGain(); g.gain.setValueAtTime(.3,t); g.gain.exponentialRampToValueAtTime(.001,t+.15);
+  ns.connect(bp); bp.connect(g); g.connect(ctx.destination); ns.start(t); ns.stop(t+.18);
+}
+
+// ── Per-weapon fire functions ─────────────────────────────────────
+function getBarrelData(){
+  const mPos=new THREE.Vector3(); muzzleSphere.getWorldPosition(mPos);
+  const bDir=new THREE.Vector3(0,0,-1).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
+  return {mPos, bDir};
+}
+
+function fireLaser(){
+  const {mPos,bDir}=getBarrelData();
+  spawnBolt(mPos,bDir,false,95,12);
+}
+
+function fireShotgun(){
+  const {mPos,bDir}=getBarrelData();
+  for(let i=0;i<7;i++){
+    const sp=new THREE.Vector3((Math.random()-.5)*.5,(Math.random()-.5)*.2,(Math.random()-.5)*.5);
+    spawnBolt(mPos,bDir.clone().add(sp).normalize(),false,55,8);
+  }
+}
+
+function fireGrenade(){
+  const {mPos,bDir}=getBarrelData();
+  const geo=new THREE.SphereGeometry(.10,6,4);
+  const mat=new THREE.MeshStandardMaterial({color:0x22ff44,emissive:0x11aa22,emissiveIntensity:3});
+  const mesh=new THREE.Mesh(geo,mat); mesh.position.copy(mPos);
+  const l=new THREE.PointLight(0x44ff44,3,8); mesh.add(l);
+  scene.add(mesh);
+  const vel=bDir.clone().multiplyScalar(30);
+  grenadeProjs.push({mesh,vel,age:0});
+}
+
+function fireSaber(){
+  playSwingSound();
+  // Saber swing arc VFX — spawn multiple trail arcs
+  for(let i=0;i<4;i++) setTimeout(spawnSaberTrail, i*40);
+  const {mPos,bDir}=getBarrelData();
+  const arcMat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const arcMesh=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,1.4,8),arcMat);
+  arcMesh.position.copy(mPos).addScaledVector(bDir,-.7);
+  const rightVec=new THREE.Vector3(1,0,0).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
+  arcMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),rightVec);
+  scene.add(arcMesh);
+  setTimeout(()=>scene.remove(arcMesh),180);
+  // Kill all enemies within 5m
+  const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  for(const e of enemies){
+    if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99;
+  }
+}
+
+function fireScatter(){
+  const {mPos}=getBarrelData();
+  for(let i=0;i<16;i++){
+    const dir=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize();
+    spawnBolt(mPos,dir,false,55,12);
+  }
+}
+
+function fireRail(){
+  const {mPos,bDir}=getBarrelData();
+  playRailSound();
+  // Instant beam VFX
+  const end=mPos.clone().addScaledVector(bDir,250);
+  const geo=new THREE.BufferGeometry().setFromPoints([mPos,end]);
+  const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x00ffff,transparent:true,opacity:.95}));
+  scene.add(line);
+  const glow=new THREE.Line(geo.clone(),new THREE.LineBasicMaterial({color:0x00ffff,transparent:true,opacity:.25}));
+  scene.add(glow); setTimeout(()=>{scene.remove(line);scene.remove(glow);},220);
+  // Hit all enemies along ray
+  for(const e of enemies){
+    const toE=new THREE.Vector3().subVectors(e.position,mPos);
+    const proj=toE.dot(bDir);
+    if(proj>0){
+      const closest=mPos.clone().addScaledVector(bDir,proj);
+      if(closest.distanceTo(e.position)<2.8) e.userData.hp-=99;
+    }
+  }
+}
+
+function fireRocket(){
+  const {mPos,bDir}=getBarrelData();
+  const grp=new THREE.Group(); grp.position.copy(mPos);
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,.5,7),
+    new THREE.MeshStandardMaterial({color:0xff3300,emissive:0xff2200,emissiveIntensity:2}));
+  body.rotation.x=Math.PI/2; grp.add(body);
+  const l=new THREE.PointLight(0xff4400,4,12); grp.add(l);
+  scene.add(grp);
+  rocketProjs.push({grp,vel:bDir.clone().multiplyScalar(16),age:0});
+}
+
+function fireDual(){
+  const {mPos,bDir}=getBarrelData();
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
+  [-.06,.06].forEach(offset=>{
+    const p=mPos.clone().addScaledVector(right,offset);
+    spawnBolt(p,bDir,false,85,8);
+  });
+}
+
+function fireFlame(){
+  flameCooldown=WEAPONS.flame.rate;
+  playFlameSound();
+  const {mPos,bDir}=getBarrelData();
+  const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  // Spawn flame particles
+  for(let i=0;i<8;i++){
+    const sp=new THREE.Vector3((Math.random()-.5)*.6,(Math.random()-.5)*.3,(Math.random()-.5)*.6);
+    const pDir=bDir.clone().add(sp).normalize();
+    const flameGrp=new THREE.Group();
+    flameGrp.position.copy(mPos);
+    const fm=new THREE.Mesh(new THREE.SphereGeometry(.05+Math.random()*.04,5,4),
+      new THREE.MeshBasicMaterial({color:new THREE.Color().setHSL(.08+Math.random()*.06,.95,.6),transparent:true,opacity:.8,blending:THREE.AdditiveBlending,depthWrite:false}));
+    flameGrp.add(fm);
+    scene.add(flameGrp);
+    const vel=pDir.multiplyScalar(6+Math.random()*4);
+    let t=0;
+    const tick=()=>{
+      if(!flameGrp.parent)return;
+      t+=.05;
+      flameGrp.position.addScaledVector(vel,.05);
+      fm.material.opacity=Math.max(0,.8*(1-t/.7));
+      fm.scale.setScalar(1+t*2);
+      if(t<.7)requestAnimationFrame(tick);
+      else scene.remove(flameGrp);
+    };
+    requestAnimationFrame(tick);
+  }
+  // Damage enemies in cone (12 unit range, ±35°)
+  for(const e of enemies){
+    const toE=new THREE.Vector3().subVectors(e.position,headPos);
+    const dist=toE.length();
+    if(dist<12&&toE.clone().normalize().dot(bDir)>.6){
+      e.userData.hp-=4;
+    }
+  }
+}
+
+function fireCannon(){
+  const {mPos,bDir}=getBarrelData();
+  playCannonSound();
+  const geo=new THREE.SphereGeometry(.22,8,6);
+  const mat=new THREE.MeshStandardMaterial({color:0x8888ff,emissive:0x4444ff,emissiveIntensity:4});
+  const mesh=new THREE.Mesh(geo,mat); mesh.position.copy(mPos);
+  const l=new THREE.PointLight(0x8888ff,6,18); mesh.add(l);
+  scene.add(mesh);
+  cannonProjs.push({mesh,vel:bDir.clone().multiplyScalar(8),age:0});
+}
+
+// ── Grenade & rocket & cannon update ─────────────────────────────
+function updateProjectiles(dt){
+  // Grenades — gravity arc, explode on terrain
+  const gDone=[];
+  for(const g of grenadeProjs){
+    g.age+=dt; g.vel.y-=9.8*dt;
+    g.mesh.position.addScaledVector(g.vel,dt);
+    g.mesh.rotation.x+=dt*8;
+    if(g.mesh.position.y<=getH(g.mesh.position.x,g.mesh.position.z)||g.age>5){
+      const pos=g.mesh.position.clone();
+      for(const e of enemies){if(e.position.distanceTo(pos)<12)e.userData.hp-=18;}
+      killExplosion(pos); playExplosionSound(pos); spawnCrater(pos);
+      gDone.push(g);
+    }
+  }
+  gDone.forEach(g=>{scene.remove(g.mesh);grenadeProjs=grenadeProjs.filter(x=>x!==g);});
+
+  // Rockets — home toward nearest enemy, area damage on hit
+  const rDone=[];
+  for(const r of rocketProjs){
+    r.age+=dt;
+    let nearest=null,nearDist=Infinity;
+    for(const e of enemies){const d=r.grp.position.distanceTo(e.position);if(d<nearDist){nearDist=d;nearest=e;}}
+    if(nearest){
+      const toE=new THREE.Vector3().subVectors(nearest.position,r.grp.position).normalize();
+      r.vel.lerp(toE.multiplyScalar(18),dt*2.2); r.vel.setLength(18);
+    }
+    r.grp.position.addScaledVector(r.vel.clone().normalize(),18*dt);
+    if(r.vel.lengthSq()>.01){r.grp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,-1),r.vel.clone().normalize());}
+    let hit=false;
+    for(const e of enemies){
+      if(r.grp.position.distanceTo(e.position)<2.5){
+        const pos=r.grp.position.clone();
+        for(const e2 of enemies){if(e2.position.distanceTo(pos)<10)e2.userData.hp-=25;}
+        killExplosion(pos); playExplosionSound(pos); hit=true; break;
+      }
+    }
+    if(hit||r.grp.position.y<getH(r.grp.position.x,r.grp.position.z)||r.age>7){
+      if(!hit)killExplosion(r.grp.position.clone());
+      rDone.push(r);
+    }
+  }
+  rDone.forEach(r=>{scene.remove(r.grp);rocketProjs=rocketProjs.filter(x=>x!==r);});
+
+  // Cannon balls — slow massive, area destroy on hit
+  const cDone=[];
+  for(const c of cannonProjs){
+    c.age+=dt;
+    c.mesh.position.addScaledVector(c.vel,dt);
+    c.mesh.rotation.x+=dt*3;
+    let hit=false;
+    for(const e of enemies){
+      if(c.mesh.position.distanceTo(e.position)<3){
+        const pos=c.mesh.position.clone();
+        for(const e2 of enemies){if(e2.position.distanceTo(pos)<14)e2.userData.hp-=99;}
+        killExplosion(pos); playExplosionSound(pos); spawnCrater(pos);
+        // Second bigger explosion ring for cannon drama
+        setTimeout(()=>killExplosion(pos.clone().add(new THREE.Vector3(Math.random()*4-2,0,Math.random()*4-2))),120);
+        hit=true; break;
+      }
+    }
+    if(hit||c.mesh.position.y<getH(c.mesh.position.x,c.mesh.position.z)||c.age>8){
+      if(!hit)killExplosion(c.mesh.position.clone());
+      cDone.push(c);
+    }
+  }
+  cDone.forEach(c=>{scene.remove(c.mesh);cannonProjs=cannonProjs.filter(x=>x!==c);});
+}
+
+// ════════════════════════════════════════════════════════════════
+//  ROCK & VOLCANO LOD UPDATES
+// ════════════════════════════════════════════════════════════════
+
+// Use dolly XZ as the distance reference — camera always sits above dolly.
+// Both rocks and volcanoes are static so we only need dolly.position.
+const _lodRef=new THREE.Vector3();
+
+function updateRockLODs(){
+  _lodRef.set(dolly.position.x, 0, dolly.position.z);
+  for(const rk of rockGroups){
+    const wp=rk.grp.position;
+    const dist=Math.sqrt((wp.x-_lodRef.x)**2+(wp.z-_lodRef.z)**2);
+    const lod=dist<30?0:dist<70?1:2;
+    if(lod===rk.lastLOD)continue;
+    rk.lastLOD=lod;
+    // LOD2 = both meshes invisible (rock sub-pixel at that range)
+    rk.meshes[0].visible=(lod===0);
+    rk.meshes[1].visible=(lod===1);
+    // group itself hidden at LOD2
+    rk.grp.visible=(lod<2);
+  }
+}
+
+function updateVolcanoLODs(){
+  _lodRef.set(dolly.position.x, 0, dolly.position.z);
+  for(const vl of volcanoLODs){
+    const wp=vl.meshes[0].position;
+    const dist=Math.sqrt((wp.x-_lodRef.x)**2+(wp.z-_lodRef.z)**2);
+    const lod=dist<100?0:dist<200?1:2;
+    if(lod===vl.lastLOD)continue;
+    vl.lastLOD=lod;
+    vl.meshes.forEach((m,i)=>{ m.visible=(i===lod); });
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
 //  WAVE ANNOUNCEMENT BILLBOARD
 //  Canvas-texture plane that floats in front of the player,
 //  fades in → holds → fades out, then disposes itself.
@@ -1938,6 +2693,16 @@ function updateShockwaves(dt){
 
 // ── Update charge each frame — auto-fire at CHARGE_MAX s ─────────
 function updateCharge(dt){
+  // Flamethrower: triggerHeld drives continuous fire, no charge mechanic
+  if(currentWeapon==='flame'){
+    if(chargeSphere) chargeSphere.material.opacity=0;
+    if(chargeBoids)  chargeBoids.material.opacity=0;
+    if(triggerHeld&&gameActive){
+      flameCooldown-=dt;
+      if(flameCooldown<=0) fireWeapon();
+    }
+    return;
+  }
   if(!triggerHeld||!gameActive){
     // Hide charge VFX when not charging
     if(chargeSphere) chargeSphere.material.opacity=0;
@@ -2011,6 +2776,451 @@ function updateCharge(dt){
 }
 
 // ════════════════════════════════════════════════════════════════
+//  COMBO MULTIPLIER
+// ════════════════════════════════════════════════════════════════
+function registerKill(){
+  comboCount++;
+  comboTimer=3.0;
+  comboMult=Math.min(4,comboCount);
+  drawHUD();
+}
+function updateCombo(dt){
+  if(comboCount>0){
+    comboTimer-=dt;
+    if(comboTimer<=0){comboCount=0;comboMult=1;drawHUD();}
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  DAY / NIGHT CYCLE  — sun orbits every 10 minutes
+// ════════════════════════════════════════════════════════════════
+function updateDayNight(dt){
+  if(!sunLight)return;
+  dayNightAngle+=dt*(Math.PI*2/DAY_NIGHT_PERIOD);
+  const t=dayNightAngle;
+  // Sun arcs from east (+X) over the south (-Z) to west (-X)
+  sunLight.position.set(Math.cos(t)*400, Math.sin(t)*350+50, -200);
+  const night=Math.max(0,-Math.sin(t)); // 0=day, 1=night
+  const day=Math.max(0,Math.sin(t));
+  sunLight.intensity=1.4*Math.max(0.05,day);
+  sunLight.color.setHSL(.1-.03*night, .7+.3*day, .9);
+  if(ambientLight){
+    const ambI=0.80*day+0.18*night;
+    ambientLight.intensity=ambI;
+    ambientLight.color.setHSL(.05+.5*night,.4,.5); // warm day → cool/purple night
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  IMPACT CRATERS  — flat scorched ring left by explosions
+// ════════════════════════════════════════════════════════════════
+function spawnCrater(pos){
+  const r=2+Math.random()*2;
+  const geo=new THREE.RingGeometry(r*.35,r,16,1);
+  const mat=new THREE.MeshBasicMaterial({color:0x110500,transparent:true,opacity:.75,depthWrite:false,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.rotation.x=-Math.PI/2;
+  const groundY=getH(pos.x,pos.z)+.05;
+  mesh.position.set(pos.x,groundY,pos.z);
+  scene.add(mesh);
+  craters.push({mesh,age:0});
+  if(craters.length>30){const old=craters.shift();scene.remove(old.mesh);}
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MUZZLE FLASH CONE  — volumetric cone on every shot
+// ════════════════════════════════════════════════════════════════
+let muzzleCone=null;
+function buildMuzzleCone(){
+  const geo=new THREE.ConeGeometry(.07,.22,8);
+  const mat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false});
+  muzzleCone=new THREE.Mesh(geo,mat);
+  muzzleCone.position.set(0,.002,-.60); // in front of muzzle sphere
+  muzzleCone.rotation.x=Math.PI/2;    // point along -Z
+  weaponGroup.add(muzzleCone);
+}
+let muzzleConeTimer=0;
+function triggerMuzzleCone(weapType){
+  if(!muzzleCone)return;
+  const col=WEAPONS[weapType]?.col??0xffffff;
+  muzzleCone.material.color.set(col);
+  muzzleCone.material.opacity=.85;
+  muzzleConeTimer=.068;
+}
+function updateMuzzleCone(dt){
+  if(!muzzleCone||muzzleConeTimer<=0)return;
+  muzzleConeTimer=Math.max(0,muzzleConeTimer-dt);
+  muzzleCone.material.opacity=muzzleConeTimer/.068*.85;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  KILL HIT FLASH  — vignette pulse on confirmed kill
+// ════════════════════════════════════════════════════════════════
+let killFlashTimer=0, killFlashCol=0xffffff;
+function triggerKillFlash(col){
+  killFlashCol=col;
+  killFlashTimer=0.18;
+}
+function updateKillFlash(dt){
+  if(killFlashTimer<=0)return;
+  killFlashTimer=Math.max(0,killFlashTimer-dt);
+  if(damageSphere){
+    damageSphere.material.color.set(killFlashCol);
+    damageSphere.material.opacity=killFlashTimer/.18*.22;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  VOLT SABER TRAIL  — fading arc planes on swing
+// ════════════════════════════════════════════════════════════════
+let saberTrails=[];
+function spawnSaberTrail(){
+  if(!weaponGroup)return;
+  const mat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.6,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(.08,1.1),mat);
+  // copy blade world transform
+  const bladePos=new THREE.Vector3(0,.45,0);
+  weaponGroup.localToWorld(bladePos);
+  mesh.position.copy(bladePos);
+  mesh.quaternion.copy(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
+  mesh.rotation.z+=(.3-.6*Math.random()); // slight random offset per arc
+  scene.add(mesh);
+  saberTrails.push({mesh,age:0});
+}
+function updateSaberTrails(dt){
+  const done=[];
+  for(const s of saberTrails){
+    s.age+=dt;s.mesh.material.opacity=Math.max(0,.6*(1-s.age/.25));
+    if(s.age>=.25)done.push(s);
+  }
+  done.forEach(s=>{scene.remove(s.mesh);saberTrails=saberTrails.filter(x=>x!==s);});
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PLAYER ENERGY SHIELD  — left thumbstick click (button 3)
+//  Projects a dome that blocks bolts from the front 180°.
+// ════════════════════════════════════════════════════════════════
+function buildShieldMesh(){
+  const geo=new THREE.SphereGeometry(.65,12,8,0,Math.PI*2,0,Math.PI/2);// hemisphere
+  const mat=new THREE.MeshBasicMaterial({color:0x0066ff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  shieldMesh=new THREE.Mesh(geo,mat);
+  shieldMesh.position.set(0,1.5,.4);// slightly in front at eye height on dolly
+  dolly.add(shieldMesh);
+}
+function activateShield(){
+  if(shieldActive||shieldRecharge>0)return;
+  shieldActive=true;shieldDur=SHIELD_DUR;
+  haptic('left',1.0,100);haptic('right',.4,60);
+  speak('Shield active');
+}
+function updateShield(dt){
+  if(shieldRecharge>0)shieldRecharge=Math.max(0,shieldRecharge-dt);
+  if(!shieldActive){if(shieldMesh)shieldMesh.material.opacity=0;return;}
+  shieldDur-=dt;
+  if(shieldMesh){
+    // Orient dome toward camera look direction
+    const fwd=new THREE.Vector3();camera.getWorldDirection(fwd);fwd.y=0;fwd.normalize();
+    shieldMesh.rotation.y=Math.atan2(fwd.x,fwd.z)+Math.PI;
+    const pulse=.25+.08*Math.sin(Date.now()*.012);
+    shieldMesh.material.opacity=shieldDur>0?pulse:0;
+  }
+  if(shieldDur<=0){shieldActive=false;shieldRecharge=SHIELD_RECHARGE;haptic('left',.6,150);}
+}
+// Returns true if bolt should be blocked
+function checkShieldBlock(boltPos){
+  if(!shieldActive)return false;
+  const cp=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const dist=boltPos.distanceTo(cp);
+  if(dist>.8)return false;
+  // Check if bolt is in front hemisphere
+  const fwd=new THREE.Vector3();camera.getWorldDirection(fwd);
+  const toBolt=new THREE.Vector3().subVectors(boltPos,cp).normalize();
+  return fwd.dot(toBolt)>.0; // front 180°
+}
+
+// ════════════════════════════════════════════════════════════════
+//  ENEMY AI UPGRADES
+//  Scout: circles player when close.  Heavy: charge ram.
+//  Standard: loose flanking spread to avoid clustering.
+// ════════════════════════════════════════════════════════════════
+let _flankAngles={};// enemyId → assigned flank offset angle
+function assignFlankAngles(){
+  // Called on spawn; assigns each enemy a flank offset so they spread out
+  enemies.forEach((e,i)=>{
+    if(!_flankAngles[e.uuid])_flankAngles[e.uuid]=(i/(enemies.length||1))*Math.PI*2;
+  });
+}
+function updateEnemyAI(e,ud,toPlayer,dist,dt){
+  const type=ud.type;
+  if(type==='scout'){
+    // Circle around player when close, retreat when player looks at them
+    if(dist<22){
+      const angle=_flankAngles[e.uuid]||0;
+      _flankAngles[e.uuid]=(angle||0)+dt*1.8; // orbit speed
+      const cx=_camWP.x+Math.cos(_flankAngles[e.uuid])*18;
+      const cz=_camWP.z+Math.sin(_flankAngles[e.uuid])*18;
+      const orbitDir=new THREE.Vector3(cx-e.position.x,0,cz-e.position.z).normalize();
+      e.position.addScaledVector(orbitDir,ud.speed*dt);
+      return;
+    }
+  }
+  if(type==='heavy'){
+    // Charge ram: when <25 units, occasionally charge forward
+    if(!ud.chargeCool)ud.chargeCool=0;
+    ud.chargeCool-=dt;
+    if(dist<25&&ud.chargeCool<=0&&Math.random()<.008){
+      ud.charging=true;ud.chargeCool=6+Math.random()*4;ud.chargeTimer=.55;
+    }
+    if(ud.charging){
+      ud.chargeTimer-=dt;
+      e.position.addScaledVector(toPlayer.clone().normalize(),ud.speed*3.5*dt);
+      if(ud.chargeTimer<=0)ud.charging=false;
+      // Ram damage
+      if(dist<2.2){takeDamage(22);ud.charging=false;}
+      return;
+    }
+  }
+  // Standard + fallback: slight flank drift
+  const flankAngle=_flankAngles[e.uuid]||0;
+  const flankDir=new THREE.Vector3(Math.cos(flankAngle),0,Math.sin(flankAngle))
+    .multiplyScalar(.28).add(toPlayer.clone().normalize());
+  if(dist>10)e.position.addScaledVector(flankDir.normalize(),ud.speed*dt);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  BOSS WAVE  — every 5th wave; massive drone with phases
+// ════════════════════════════════════════════════════════════════
+function spawnBoss(){
+  const px=dolly.position.x,pz=dolly.position.z;
+  const g=new THREE.Group();
+  const scale=3.0;
+  const bGeo=new THREE.OctahedronGeometry(1.1*scale,1); // detail=1 for boss
+  const body=new THREE.Mesh(bGeo,new THREE.MeshStandardMaterial({color:0x220000,roughness:.2,metalness:.9,emissive:0x880000,emissiveIntensity:.8}));
+  g.add(body);
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(.5*scale,10,8),new THREE.MeshBasicMaterial({color:0xff0000}));
+  eye.position.z=1.5*scale;g.add(eye);
+  const eL=new THREE.PointLight(0xff2200,5,20);eL.position.copy(eye.position);g.add(eL);
+  const rings=[];
+  for(let i=0;i<6;i++){
+    const r=new THREE.Mesh(new THREE.TorusGeometry((2+i*.4)*scale,.08*scale,6,24),new THREE.MeshBasicMaterial({color:0xaa0000,transparent:true,opacity:.65}));
+    r.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);g.add(r);rings.push(r);
+  }
+  const h=getH(px-40,pz-40);
+  g.position.set(px-40,h+8,pz-40);
+  const lod1=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,6,5),body.material.clone());lod1.visible=false;g.add(lod1);
+  const lod2=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,4,3),body.material.clone());lod2.visible=false;g.add(lod2);
+  g.userData={type:'boss',hp:50,maxHp:50,speed:2.5,shootTimer:.8,shootDelay:.8,shootRand:.5,
+    boltSpeed:18,boltDmg:20,hoverPhase:0,hoverH:8,rings,eye,eL,body,isDying:false,
+    lodBodies:[body,lod1,lod2],lastLOD:-1,baseLightInt:5,chargeCool:0,charging:false,chargeTimer:0};
+  scene.add(g);enemies.push(g);bossEnemy=g;
+  speak('Boss drone incoming');
+  drawHUD();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  WEAPON DEGRADATION
+// ════════════════════════════════════════════════════════════════
+function degradeWeapon(){
+  const def=WEAPONS[currentWeapon];
+  if(def.ammo===Infinity)return; // laser never degrades
+  if(!weaponCondition[currentWeapon])weaponCondition[currentWeapon]=100;
+  weaponCondition[currentWeapon]=Math.max(0,weaponCondition[currentWeapon]-1.2);
+  const c=weaponCondition[currentWeapon];
+  // Dim weapon glow with condition
+  if(muzzleLight)muzzleLight.distance=5*(c/100);
+  // Revert to laser when fully degraded
+  if(c<=0){speak('Weapon degraded, reverting to laser');equipWeapon('laser');}
+}
+function getConditionMult(){
+  const c=weaponCondition[currentWeapon]??100;
+  return c>50?1.0:c>20?.7:.45; // damage multiplier
+}
+
+// ════════════════════════════════════════════════════════════════
+//  WAVE UPGRADE CARDS  — 3 floating planes, touch to select
+// ════════════════════════════════════════════════════════════════
+const UPGRADES=[
+  {id:'dash_cd',  label:'DASH RECHARGE',  desc:'Dash cooldown -0.5s',   fn:()=>{DASH_COOLDOWN_VAL=Math.max(.5,DASH_COOLDOWN_VAL-.5);}},
+  {id:'shield_d', label:'SHIELD UPGRADE', desc:'Shield lasts +1s',      fn:()=>{SHIELD_DUR_VAL+=1;}},
+  {id:'health_r', label:'COMBAT STIMS',   desc:'Health regen +2/s',      fn:()=>{healthRegenRate+=2;}},
+  {id:'combo',    label:'COMBO MASTER',   desc:'Max combo ×6',           fn:()=>{maxCombo=6;}},
+  {id:'blast_cd', label:'SUPER CHARGE',   desc:'Blast charges 1s faster',fn:()=>{CHARGE_MAX_VAL=Math.max(3,CHARGE_MAX_VAL-1);}},
+  {id:'speed',    label:'SPRINT BOOST',   desc:'Sprint speed +1',        fn:()=>{SPRINT_VAL+=1;}},
+  {id:'shield_r', label:'SHIELD REGEN',   desc:'Shield recharge -2s',    fn:()=>{SHIELD_RECHARGE_VAL=Math.max(3,SHIELD_RECHARGE_VAL-2);}},
+  {id:'restore',  label:'FIELD MEDIC',    desc:'Restore 40 health now',  fn:()=>{health=Math.min(maxHealth,health+40);drawHUD();}},
+];
+// Mutable upgrade values (used by systems)
+let DASH_COOLDOWN_VAL=2.0, SHIELD_DUR_VAL=3.0, healthRegenRate=5, maxCombo=4;
+let CHARGE_MAX_VAL=8.0, SPRINT_VAL=9.0, SHIELD_RECHARGE_VAL=10.0;
+
+function showUpgradeCards(){
+  upgradePhase=true;
+  // Pick 3 random distinct upgrades
+  const picks=[...UPGRADES].sort(()=>Math.random()-.5).slice(0,3);
+  const fwd=new THREE.Vector3();camera.getWorldDirection(fwd);fwd.y=0;fwd.normalize();
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  picks.forEach((up,i)=>{
+    const offset=(i-1)*1.4; // spread left/right
+    const right=new THREE.Vector3(-fwd.z,0,fwd.x);
+    const cv=document.createElement('canvas');cv.width=320;cv.height=200;
+    const ctx=cv.getContext('2d');
+    ctx.fillStyle='rgba(0,8,25,.92)';ctx.fillRect(0,0,320,200);
+    ctx.strokeStyle='rgba(80,180,255,.6)';ctx.lineWidth=2;ctx.strokeRect(4,4,312,192);
+    ctx.fillStyle='rgba(80,180,255,.9)';ctx.font='bold 22px monospace';ctx.textAlign='center';
+    ctx.fillText(up.label,160,55);
+    ctx.fillStyle='rgba(200,220,255,.7)';ctx.font='15px monospace';
+    ctx.fillText(up.desc,160,100);
+    ctx.fillStyle='rgba(80,180,255,.45)';ctx.font='13px monospace';
+    ctx.fillText('REACH OUT TO SELECT',160,155);
+    const tex=new THREE.CanvasTexture(cv);
+    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
+    const mesh=new THREE.Mesh(new THREE.PlaneGeometry(1.2,.75),mat);
+    mesh.position.copy(camPos).addScaledVector(fwd,5).addScaledVector(right,offset);
+    mesh.position.y=camPos.y+.1;
+    mesh.lookAt(camPos);
+    scene.add(mesh);
+    upgradeCards.push({mesh,mat,tex,upgrade:up,age:0});
+  });
+  speak('Select an upgrade');
+}
+
+function updateUpgradeCards(dt){
+  if(!upgradePhase||!upgradeCards.length)return;
+  const rightPos=rightGrip?new THREE.Vector3().setFromMatrixPosition(rightGrip.matrixWorld):null;
+  const leftPos=leftGrip?new THREE.Vector3().setFromMatrixPosition(leftGrip.matrixWorld):null;
+  for(const c of upgradeCards) c.age+=dt;
+  // Check hand proximity
+  for(const c of upgradeCards){
+    const close=
+      (rightPos&&rightPos.distanceTo(c.mesh.position)<.65)||
+      (leftPos&&leftPos.distanceTo(c.mesh.position)<.65);
+    if(close){
+      // Selected!
+      c.upgrade.fn();
+      // Clear all cards
+      upgradeCards.forEach(cc=>{scene.remove(cc.mesh);cc.tex.dispose();cc.mat.dispose();});
+      upgradeCards=[];
+      upgradePhase=false;pendingUpgrade=false;
+      haptic('right',1.0,200);haptic('left',1.0,200);
+      speak('Upgrade applied');
+      drawHUD();
+      return;
+    }
+    // Gentle float
+    c.mesh.position.y+=Math.sin(c.age*1.8)*.0008;
+  }
+}
+
+function clearUpgradeCards(){
+  upgradeCards.forEach(c=>{scene.remove(c.mesh);try{c.tex.dispose();c.mat.dispose();}catch(e){}});
+  upgradeCards=[];upgradePhase=false;pendingUpgrade=false;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SPATIAL ENEMY HUM  — each drone emits a low buzz from its pos
+// ════════════════════════════════════════════════════════════════
+function startEnemyHum(e){
+  const ctx=getAudio();if(!ctx||enemyHumNodes[e.uuid])return;
+  const pan=ctx.createPanner();
+  pan.panningModel='HRTF';pan.distanceModel='inverse';pan.refDistance=5;pan.maxDistance=60;pan.rolloffFactor=1.2;
+  setPannerPos(pan,e.position);pan.connect(ctx.destination);
+  const osc=ctx.createOscillator();osc.type='sine';
+  const baseF=e.userData.type==='heavy'?42:e.userData.type==='scout'?120:70;
+  osc.frequency.value=baseF;
+  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=.4+Math.random()*.3;
+  const lfoG=ctx.createGain();lfoG.gain.value=8;
+  lfo.connect(lfoG);lfoG.connect(osc.frequency);
+  const gain=ctx.createGain();gain.gain.value=.18;
+  osc.connect(gain);gain.connect(pan);
+  osc.start();lfo.start();
+  enemyHumNodes[e.uuid]={osc,lfo,gain,pan};
+}
+function updateEnemyHums(){
+  for(const e of enemies){
+    if(!enemyHumNodes[e.uuid]) startEnemyHum(e);
+    const n=enemyHumNodes[e.uuid];
+    if(n)setPannerPos(n.pan,e.position);
+  }
+}
+function stopEnemyHum(e){
+  const n=enemyHumNodes[e.uuid];if(!n)return;
+  try{n.osc.stop();n.lfo.stop();}catch(ex){}
+  try{n.pan.disconnect();}catch(ex){}
+  delete enemyHumNodes[e.uuid];
+}
+function stopAllEnemyHums(){Object.keys(enemyHumNodes).forEach(id=>{const n=enemyHumNodes[id];try{n.osc.stop();n.lfo.stop();}catch(e){}try{n.pan.disconnect();}catch(e){};});enemyHumNodes={};}
+
+// ════════════════════════════════════════════════════════════════
+//  GENERATIVE MUSIC  — state-reactive ambient / combat scoring
+// ════════════════════════════════════════════════════════════════
+function startMusic(){
+  const ctx=getAudio();if(!ctx||musicNodes)return;
+  const master=ctx.createGain();master.gain.value=0.18;master.connect(ctx.destination);
+  // Bass drone
+  const bass=ctx.createOscillator();bass.type='sine';bass.frequency.value=55;
+  const bassG=ctx.createGain();bassG.gain.value=.6;bass.connect(bassG);bassG.connect(master);
+  // Pad (slightly detuned)
+  const pad=ctx.createOscillator();pad.type='triangle';pad.frequency.value=55.3;
+  const padG=ctx.createGain();padG.gain.value=.35;pad.connect(padG);padG.connect(master);
+  // High pulse
+  const pulse=ctx.createOscillator();pulse.type='square';pulse.frequency.value=220;
+  const pulseG=ctx.createGain();pulseG.gain.value=0;pulse.connect(pulseG);pulseG.connect(master);
+  // LFO on bass
+  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=.12;
+  const lfoG=ctx.createGain();lfoG.gain.value=12;lfo.connect(lfoG);lfoG.connect(bass.frequency);
+  bass.start();pad.start();pulse.start();lfo.start();
+  musicNodes={bass,pad,pulse,pulseG,master};
+}
+function updateMusic(){
+  if(!musicNodes)return;
+  const intensity=Math.min(1,(enemies.length/12)+.1);
+  // Ramp pulse gain with enemy count (combat intensity)
+  const target=intensity>.4?.08+intensity*.18:0;
+  musicNodes.pulseG.gain.setTargetAtTime(target,getAudio().currentTime,.8);
+  musicNodes.master.gain.setTargetAtTime(.12+intensity*.12,getAudio().currentTime,1.5);
+}
+function stopMusic(){
+  if(!musicNodes)return;
+  try{musicNodes.bass.stop();musicNodes.pad.stop();musicNodes.pulse.stop();}catch(e){}
+  musicNodes=null;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  FOOTSTEP SOUNDS  — crunch when moving on Io surface
+// ════════════════════════════════════════════════════════════════
+let footTimer=0;
+function updateFootsteps(dt,moveX,moveZ){
+  if(!isGrounded||!(Math.abs(moveX)>.1||Math.abs(moveZ)>.1))return;
+  footTimer-=dt;
+  if(footTimer>0)return;
+  const spd=leftGripHeld?SPRINT_VAL:SPEED;
+  footTimer=.42-spd*.018; // faster steps when sprinting
+  const ctx=getAudio();if(!ctx)return;
+  const t=ctx.currentTime;
+  const nb=ctx.createBuffer(1,ctx.sampleRate*.06,ctx.sampleRate);
+  const nd=nb.getChannelData(0);for(let i=0;i<nd.length;i++)nd[i]=(Math.random()*2-1)*(1-i/nd.length);
+  const src=ctx.createBufferSource();src.buffer=nb;
+  const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=280+Math.random()*120;
+  const g=ctx.createGain();g.gain.value=.06+Math.random()*.03;
+  src.connect(lp);lp.connect(g);g.connect(ctx.destination);src.start(t);src.stop(t+.07);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  VOICE LINES  — Web Speech API (no files, runs in Meta browser)
+// ════════════════════════════════════════════════════════════════
+let lastSpoken='',voiceCooldown=0;
+function speak(text){
+  if(!window.speechSynthesis)return;
+  if(text===lastSpoken&&voiceCooldown>0)return;
+  lastSpoken=text;voiceCooldown=4;
+  window.speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.rate=1.0;u.pitch=.85;u.volume=.7;
+  window.speechSynthesis.speak(u);
+}
+function updateVoiceCooldown(dt){voiceCooldown=Math.max(0,voiceCooldown-dt);}
+
+// ════════════════════════════════════════════════════════════════
 //  RENDER LOOP
 // ════════════════════════════════════════════════════════════════
 function loop(time,frame){
@@ -2028,6 +3238,12 @@ function loop(time,frame){
     updateBolts(dt);
     updateWaves(now);
     updateCharge(dt);
+    updateCombo(dt);
+    updateShield(dt);
+    updateEnemyHums();
+    updateMusic();
+    updateDayNight(dt);
+    updateVoiceCooldown(dt);
     fireCooldown=Math.max(0,fireCooldown-dt);
 
     // ── Health regen: 5s grace period, then +5 units/s ──────────────
@@ -2046,9 +3262,17 @@ function loop(time,frame){
   updateExplosions(dt);
   updateShockwaves(dt);
   updateWaveBanner(dt);
-  updateDust(dt); // always runs so in-flight explosions finish even after game over
+  updateDust(dt);
+  updateRockLODs();
+  updateVolcanoLODs();
+  updateMuzzleCone(dt);
+  updateKillFlash(dt);
+  updateSaberTrails(dt);
+  updateUpgradeCards(dt);
+  updateWeapon(dt,now);
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); }
 
-  updateWeapon(dt,now); // always runs so energy cell still pulses on menus
+  // updateWeapon moved above
 
   renderer.render(scene,camera);
 }
