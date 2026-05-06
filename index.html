@@ -123,6 +123,7 @@ const CHARGE_MAX=8.0; // seconds to full charge
 let chargeOsc=null, chargeGain=null; // audio nodes for rising charge tone
 let shockwaves=[]; // active expanding ring meshes
 let chargeSphere=null, chargeBoids=null, chargeBoidData=[]; // charge VFX
+let waveBillboard=null; // active wave announcement mesh
 
 const SPEED=5.5, SPRINT=9.0, SENS_SNAP=Math.PI/4; // 45° snap turns
 
@@ -825,6 +826,7 @@ function enterVR(){
   }).then(session=>{
     renderer.xr.setSession(session);
     initAudio();
+    setTimeout(startVolcanoAmbience, 600); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
     document.getElementById('overlay').style.display='none';
     startGame();
@@ -837,9 +839,8 @@ function enterVR(){
 // Used on XR session end, game over, and page losing focus.
 function stopAllAudio(){
   if(!audioCtx)return;
-  // Stop all live bolt buzz nodes cleanly first
   for(const p of eBolts) stopBoltBuzz(p);
-  // Suspend the context — stops all remaining audio instantly
+  stopVolcanoAmbience();
   audioCtx.suspend().catch(()=>{});
 }
 
@@ -859,12 +860,14 @@ function onXREnd(){
 function startGame(){
   gameActive=true;gameOverState=false;
   resumeAudioIfNeeded();
+  setTimeout(startVolcanoAmbience,300);
   health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
   playerVY=0;isGrounded=true;
   fireCooldown=0;
   dolly.position.set(0, getTerrainMeshHeight(0,0), 0);
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
+  setTimeout(()=>showWaveBanner(1), 800);  // slight delay so VR has settled
   drawHUD();
 }
 
@@ -933,7 +936,7 @@ function fireWeapon(){
   spawnBolt(mPos,bDir,false);
 }
 
-function spawnBolt(startPos,dir,isEnemy){
+function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
   const LEN=1.5,grp=new THREE.Group();
   grp.position.copy(startPos);
   const d=dir.clone().normalize();
@@ -944,7 +947,7 @@ function spawnBolt(startPos,dir,isEnemy){
     const u={uTime:{value:0},uColor:{value:new THREE.Color(.9,.12,0)}};
     grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,LEN,12,1,true),new THREE.ShaderMaterial({uniforms:u,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
     grp.add(new THREE.PointLight(0xff2200,3.5,10));
-    grp.userData={vel:d.clone().multiplyScalar(22),age:0,unis:[u]};
+    grp.userData={vel:d.clone().multiplyScalar(boltSpd),age:0,unis:[u],dmg:boltDmg};
     scene.add(grp);eBolts.push(grp);
     createBoltBuzz(grp);  // attach live 3-D buzz that follows this bolt
   }else{
@@ -962,6 +965,44 @@ function spawnBolt(startPos,dir,isEnemy){
 // (reload removed — unlimited ammo)
 
 // ── Enemies ─────────────────────────────────────────────────────
+// ── Enemy type definitions ─────────────────────────────────────────
+const ENEMY_TYPES={
+  scout:{
+    hp:1, speedBase:7.5, speedWave:.6, shootDelay:0.6, shootRand:0.8,
+    boltSpeed:30, boltDmg:6, scale:0.70,
+    bodyColor:0x002211, emissive:0x004422, emissiveInt:.6,
+    eyeColor:0x00ff88, ringColor:0x003311, ringOpacity:.6,
+    lightColor:0x00ff44, lightInt:1.8, rings:2,
+    label:'SCOUT'
+  },
+  standard:{
+    hp:3, speedBase:4.5, speedWave:.4, shootDelay:1.0, shootRand:1.5,
+    boltSpeed:22, boltDmg:10, scale:1.0,
+    bodyColor:0x110400, emissive:0x440800, emissiveInt:.4,
+    eyeColor:0xff1100, ringColor:0x550200, ringOpacity:.55,
+    lightColor:0xff2200, lightInt:1.5, rings:3,
+    label:'DRONE'
+  },
+  heavy:{
+    hp:8, speedBase:2.2, speedWave:.18, shootDelay:1.8, shootRand:1.0,
+    boltSpeed:16, boltDmg:18, scale:1.85,
+    bodyColor:0x220800, emissive:0x881100, emissiveInt:.8,
+    eyeColor:0xff6600, ringColor:0x882200, ringOpacity:.75,
+    lightColor:0xff4400, lightInt:2.8, rings:4,
+    label:'HEAVY'
+  }
+};
+
+// Weighted random type — scouts more common early, heavies ramp up with wave
+function pickEnemyType(){
+  const r=Math.random();
+  const heavyChance=Math.min(.35, (wave-3)*.08);   // 0 until wave 3, then ramps
+  const scoutChance=Math.min(.45, .15+wave*.05);
+  if(r<heavyChance) return 'heavy';
+  if(r<heavyChance+scoutChance) return 'scout';
+  return 'standard';
+}
+
 function spawnEnemy(){
   const px=dolly.position.x,pz=dolly.position.z;
 
@@ -981,20 +1022,50 @@ function spawnEnemy(){
   } while(++attempts < 12);
 
   const h=getH(x,z);
+  const type=pickEnemyType();
+  const T=ENEMY_TYPES[type];
   const g=new THREE.Group();
-  const bGeo=new THREE.OctahedronGeometry(1.1,0),bp=bGeo.attributes.position;
+
+  // Body — octahedron deformed by type scale
+  const bSize=1.1*T.scale;
+  const bGeo=new THREE.OctahedronGeometry(bSize,0),bp=bGeo.attributes.position;
   for(let i=0;i<bp.count;i++)bp.setXYZ(i,bp.getX(i)*(.8+Math.random()*.4),bp.getY(i)*(1.2+Math.random()*.4),bp.getZ(i)*(.8+Math.random()*.4));
   bGeo.computeVertexNormals();
-  const body=new THREE.Mesh(bGeo,new THREE.MeshStandardMaterial({color:0x110400,roughness:.25,metalness:.85,emissive:0x440800,emissiveIntensity:.4}));g.add(body);
-  const eye=new THREE.Mesh(new THREE.SphereGeometry(.3,8,6),new THREE.MeshBasicMaterial({color:0xff1100}));eye.position.z=.95;g.add(eye);
-  const eL=new THREE.PointLight(0xff2200,1.5,5);eL.position.copy(eye.position);g.add(eL);
+  const body=new THREE.Mesh(bGeo,new THREE.MeshStandardMaterial({color:T.bodyColor,roughness:.25,metalness:.85,emissive:T.emissive,emissiveIntensity:T.emissiveInt}));
+  g.add(body);
+
+  // Sensor eye
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(.3*T.scale,8,6),new THREE.MeshBasicMaterial({color:T.eyeColor}));
+  eye.position.z=.95*T.scale;g.add(eye);
+  const eL=new THREE.PointLight(T.lightColor,T.lightInt,5*T.scale);eL.position.copy(eye.position);g.add(eL);
+
+  // Orbital rings — count varies by type
   const rings=[];
-  for(let i=0;i<3;i++){
-    const r=new THREE.Mesh(new THREE.TorusGeometry(1.4+i*.35,.055,5,16),new THREE.MeshBasicMaterial({color:0x550200,transparent:true,opacity:.55}));
-    r.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);g.add(r);rings.push(r);
+  for(let i=0;i<T.rings;i++){
+    const r=new THREE.Mesh(new THREE.TorusGeometry((1.4+i*.35)*T.scale,.055*T.scale,5,16),
+      new THREE.MeshBasicMaterial({color:T.ringColor,transparent:true,opacity:T.ringOpacity}));
+    r.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
+    g.add(r);rings.push(r);
   }
-  g.position.set(x,h+3.5,z);
-  g.userData={hp:3,speed:4.5+Math.random()*2.5+wave*.4,shootTimer:1+Math.random()*2,hoverPhase:Math.random()*Math.PI*2,rings,eye,eL,body,isDying:false};
+
+  // Heavy type gets an extra armour shell
+  if(type==='heavy'){
+    const shell=new THREE.Mesh(new THREE.IcosahedronGeometry(bSize*1.15,0),
+      new THREE.MeshStandardMaterial({color:0x331100,roughness:.6,metalness:.9,transparent:true,opacity:.55,wireframe:false}));
+    g.add(shell);
+  }
+
+  const hoverH=type==='heavy'?2.5:3.5;
+  g.position.set(x,h+hoverH,z);
+  g.userData={
+    type, hp:T.hp, maxHp:T.hp,
+    speed:T.speedBase+Math.random()*1.5+wave*T.speedWave,
+    shootTimer:T.shootDelay+Math.random()*T.shootRand,
+    shootDelay:T.shootDelay, shootRand:T.shootRand,
+    boltSpeed:T.boltSpeed, boltDmg:T.boltDmg,
+    hoverPhase:Math.random()*Math.PI*2, hoverH,
+    rings,eye,eL,body,isDying:false
+  };
   scene.add(g);enemies.push(g);
 }
 
@@ -1005,7 +1076,7 @@ function updateEnemies(dt){
   for(const e of enemies){
     const ud=e.userData;if(ud.isDying){dead.push(e);continue;}
     ud.hoverPhase+=dt*2.2;
-    e.position.y=getH(e.position.x,e.position.z)+3.5+Math.sin(ud.hoverPhase)*.6;
+    e.position.y=getH(e.position.x,e.position.z)+ud.hoverH+Math.sin(ud.hoverPhase)*.6;
     const toP=new THREE.Vector3().subVectors(_camWP,e.position),dist=toP.length();
     e.rotation.y=Math.atan2(toP.x,toP.z);
     if(dist>10)e.position.addScaledVector(toP.clone().normalize(),ud.speed*dt);
@@ -1015,8 +1086,8 @@ function updateEnemies(dt){
     if(ud.shootTimer<=0&&dist<70){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
       const d=new THREE.Vector3().subVectors(_camWP,e.position).normalize().add(jitter).normalize();
-      spawnBolt(e.position.clone(),d,true);
-      ud.shootTimer=Math.max(.5,2.5-wave*.15)+Math.random()*1.5;
+      spawnBolt(e.position.clone(),d,true,ud.boltSpeed,ud.boltDmg);
+      ud.shootTimer=Math.max(.4,ud.shootDelay-wave*.08)+Math.random()*ud.shootRand;
     }
     if(ud.hp<=0){ud.isDying=true;dead.push(e);}
   }
@@ -1024,7 +1095,9 @@ function updateEnemies(dt){
     killExplosion(e.position.clone());scene.remove(e);
     playExplosionSound(e.position.clone());
     enemies=enemies.filter(x=>x!==e);
-    kills++;score+=100*wave;drawHUD();
+    kills++;
+    const typeScore={scout:50,standard:100,heavy:300};
+    score+=(typeScore[e.userData.type]||100)*wave;drawHUD();
   }
 }
 
@@ -1096,7 +1169,7 @@ function updateBolts(dt){
         }
         if(!hit&&p.userData.age>2.5)rem.push(p);
       }else{
-        if(p.position.distanceTo(_camWP)<1.5){takeDamage(8+Math.floor(Math.random()*8));rem.push(p);}
+        if(p.position.distanceTo(_camWP)<1.5){takeDamage(p.userData.dmg||10);rem.push(p);}
       }
     }
     rem.forEach(p=>{ if(!isPlayer)stopBoltBuzz(p); scene.remove(p); });
@@ -1171,6 +1244,7 @@ function updatePlayer(dt){
         dolly.position.y=groundY;
         playerVY=0;isGrounded=true;
         haptic('right',0.6,80);haptic('left',0.5,70);
+        spawnLandingDust(new THREE.Vector3(dolly.position.x,groundY,dolly.position.z));
         drawHUD();
       }
     }else{
@@ -1214,6 +1288,7 @@ function takeDamage(dmg){
 function triggerGameOver(){
   gameActive=false;gameOverState=true;
   stopAllAudio();
+  saveScore(score,wave,kills).then(()=>drawGameOverHUD());
   enemies.forEach(e=>scene.remove(e));
   pBolts.forEach(p=>scene.remove(p));
   eBolts.forEach(p=>{stopBoltBuzz(p);scene.remove(p);});
@@ -1240,9 +1315,9 @@ function updateLava(){
 // ── Wave escalation ────────────────────────────────────────────────
 function updateWaves(now){
   if(!gameActive)return;
-  const maxE=3+wave*2,spawnI=Math.max(.8,3.5-wave*.25);
+  const maxE=Math.min(12, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
   if(enemies.length<maxE&&now-lastSpawn>spawnI){spawnEnemy();lastSpawn=now;}
-  if(score>=waveThresh&&wave<12){wave++;waveThresh=score+500*wave;drawHUD();}
+  if(score>=waveThresh&&wave<12){wave++;waveThresh=score+500*wave;showWaveBanner(wave);drawHUD();}
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1472,6 +1547,257 @@ function playEnemyShot(worldPos){
   o2.frequency.exponentialRampToValueAtTime(45,t+0.18);
   const g2=ctx.createGain();g2.gain.setValueAtTime(0.18,t);g2.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   o2.connect(g2);g2.connect(master);o2.start(t);o2.stop(t+0.22);
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  AMBIENT VOLCANO RUMBLE  — 3D looping low-frequency drone
+//  One PannerNode per volcano, positioned at its world location.
+//  Starts after AudioContext is created (on VR entry).
+// ════════════════════════════════════════════════════════════════
+const VOLCANO_POSITIONS=[
+  {x:-90,z:-160,h:70},{x:160,z:80,h:40},{x:-200,z:200,h:55}
+];
+let volcanoNodes=[];  // so we can stop them on audio suspend
+
+function startVolcanoAmbience(){
+  const ctx=getAudio();if(!ctx)return;
+  if(volcanoNodes.length)return; // already running
+
+  VOLCANO_POSITIONS.forEach(v=>{
+    const worldY=getH(v.x,v.z)+v.h;
+    const pan=ctx.createPanner();
+    pan.panningModel='HRTF'; pan.distanceModel='inverse';
+    pan.refDistance=18; pan.maxDistance=300; pan.rolloffFactor=1.1;
+    setPannerPos(pan,{x:v.x,y:worldY,z:v.z});
+    pan.connect(ctx.destination);
+
+    // Sub-bass rumble oscillator
+    const o1=ctx.createOscillator();o1.type='sine';o1.frequency.value=28+Math.random()*8;
+    const g1=ctx.createGain();g1.gain.value=0.55;
+    o1.connect(g1);g1.connect(pan);
+
+    // Irregular crackle LFO
+    const lfo=ctx.createOscillator();lfo.type='sine';
+    lfo.frequency.value=0.18+Math.random()*0.12;
+    const lfoG=ctx.createGain();lfoG.gain.value=0.22;
+    lfo.connect(lfoG);lfoG.connect(g1.gain);
+
+    // Band-pass noise for hiss/steam
+    const nb=ctx.createBuffer(1,ctx.sampleRate*4,ctx.sampleRate);
+    const nd=nb.getChannelData(0);for(let i=0;i<nd.length;i++)nd[i]=Math.random()*2-1;
+    const ns=ctx.createBufferSource();ns.buffer=nb;ns.loop=true;
+    const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=90;bp.Q.value=0.6;
+    const ng=ctx.createGain();ng.gain.value=0.30;
+    ns.connect(bp);bp.connect(ng);ng.connect(pan);
+
+    o1.start();lfo.start();ns.start();
+    volcanoNodes.push({o1,lfo,ns,pan,g1,ng});
+  });
+}
+
+function stopVolcanoAmbience(){
+  volcanoNodes.forEach(n=>{
+    try{n.o1.stop();n.lfo.stop();n.ns.stop();}catch(e){}
+    try{n.pan.disconnect();}catch(e){}
+  });
+  volcanoNodes=[];
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  LANDING DUST  — particle burst when super jump lands
+// ════════════════════════════════════════════════════════════════
+let dustParticles=[];
+
+function spawnLandingDust(pos){
+  const N=60,geo=new THREE.BufferGeometry();
+  const arr=new Float32Array(N*3),vels=[];
+  for(let i=0;i<N;i++){
+    arr[i*3]=pos.x+(Math.random()-.5)*.8;
+    arr[i*3+1]=pos.y+.1;
+    arr[i*3+2]=pos.z+(Math.random()-.5)*.8;
+    const a=Math.random()*Math.PI*2,sp=1.5+Math.random()*4.5,vy=.5+Math.random()*2.5;
+    vels.push(Math.cos(a)*sp, vy, Math.sin(a)*sp);
+  }
+  geo.setAttribute('position',new THREE.BufferAttribute(arr,3));
+  const mat=new THREE.PointsMaterial({
+    color:0xc8a020,size:.35,transparent:true,opacity:.85,
+    blending:THREE.AdditiveBlending,depthWrite:false
+  });
+  const pts=new THREE.Points(geo,mat);
+  scene.add(pts);
+  dustParticles.push({geo,mat,pts,vels,t:0,N});
+}
+
+function updateDust(dt){
+  const done=[];
+  for(const d of dustParticles){
+    d.t+=dt;
+    const pa=d.geo.attributes.position.array;
+    for(let i=0;i<d.N;i++){
+      pa[i*3  ]+=d.vels[i*3  ]*dt;
+      pa[i*3+1]+=d.vels[i*3+1]*dt; d.vels[i*3+1]-=4*dt; // gravity drag
+      pa[i*3+2]+=d.vels[i*3+2]*dt;
+    }
+    d.geo.attributes.position.needsUpdate=true;
+    d.mat.opacity=Math.max(0,.85*(1-d.t/1.2));
+    d.mat.size=.35+d.t*.4;
+    if(d.t>=1.2)done.push(d);
+  }
+  for(const d of done){
+    scene.remove(d.pts);d.geo.dispose();d.mat.dispose();
+    dustParticles=dustParticles.filter(x=>x!==d);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  SCORE LEADERBOARD  — persistent via window.storage API
+// ════════════════════════════════════════════════════════════════
+const LB_KEY='io_leaderboard';
+const LB_MAX=10;
+
+async function saveScore(finalScore,finalWave,finalKills){
+  try{
+    let lb=[];
+    try{ const r=await window.storage.get(LB_KEY);if(r)lb=JSON.parse(r.value); }catch(e){}
+    lb.push({score:finalScore,wave:finalWave,kills:finalKills,date:new Date().toLocaleDateString()});
+    lb.sort((a,b)=>b.score-a.score);
+    lb=lb.slice(0,LB_MAX);
+    await window.storage.set(LB_KEY,JSON.stringify(lb));
+  }catch(e){}
+}
+
+async function loadLeaderboard(){
+  try{
+    const r=await window.storage.get(LB_KEY);
+    return r?JSON.parse(r.value):[];
+  }catch(e){return [];}
+}
+
+// Draw leaderboard into the game-over wrist HUD
+async function drawGameOverHUD(){
+  const lb=await loadLeaderboard();
+  if(!hudCtx||!hudTexture)return;
+  const ctx=hudCtx,W=512,H=256;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,8,18,0.94)';
+  if(ctx.roundRect){ctx.beginPath();ctx.roundRect(4,4,W-8,H-8,14);ctx.fill();}
+  else ctx.fillRect(4,4,W-8,H-8);
+  ctx.strokeStyle='rgba(255,30,0,0.45)';ctx.lineWidth=2;
+  if(ctx.roundRect){ctx.beginPath();ctx.roundRect(4,4,W-8,H-8,14);ctx.stroke();}
+  else ctx.strokeRect(4,4,W-8,H-8);
+
+  // Title
+  ctx.fillStyle='rgba(255,30,0,0.90)';ctx.font='bold 22px monospace';ctx.textAlign='center';
+  ctx.fillText('MARINE DOWN',W/2,36);
+  ctx.fillStyle='rgba(255,100,50,0.70)';ctx.font='bold 14px monospace';
+  ctx.fillText(`SCORE ${score}  ·  KILLS ${kills}  ·  WAVE ${wave}`,W/2,60);
+  ctx.fillStyle='rgba(255,80,0,0.40)';ctx.font='11px monospace';
+  ctx.fillText('PULL RIGHT TRIGGER TO REDEPLOY',W/2,80);
+
+  // Leaderboard
+  ctx.fillStyle='rgba(48,190,255,0.55)';ctx.font='bold 12px monospace';ctx.textAlign='left';
+  ctx.fillText('── TOP SCORES ──────────────────',14,104);
+  lb.slice(0,6).forEach((e,i)=>{
+    const isMe=(e.score===score&&e.wave===wave&&e.kills===kills);
+    ctx.fillStyle=isMe?'rgba(255,200,50,0.95)':'rgba(48,190,255,0.75)';
+    ctx.font=isMe?'bold 12px monospace':'12px monospace';
+    ctx.textAlign='left';  ctx.fillText(`${i+1}. ${e.score.toLocaleString()}`,14,122+i*22);
+    ctx.textAlign='right'; ctx.fillText(`W${e.wave} K${e.kills}  ${e.date}`,W-14,122+i*22);
+  });
+  hudTexture.needsUpdate=true;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  WAVE ANNOUNCEMENT BILLBOARD
+//  Canvas-texture plane that floats in front of the player,
+//  fades in → holds → fades out, then disposes itself.
+// ════════════════════════════════════════════════════════════════
+
+function showWaveBanner(waveNum){
+  // Remove any existing banner immediately
+  if(waveBillboard){ scene.remove(waveBillboard); waveBillboard=null; }
+
+  // ── Canvas texture ──────────────────────────────────────────
+  const W=512, H=192;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
+
+  // Background panel
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,6,18,0.82)';
+  if(ctx.roundRect){ ctx.beginPath();ctx.roundRect(8,8,W-16,H-16,18);ctx.fill(); }
+  else { ctx.fillRect(8,8,W-16,H-16); }
+
+  // Outer glow border
+  ctx.strokeStyle='rgba(255,120,0,0.55)'; ctx.lineWidth=2;
+  if(ctx.roundRect){ ctx.beginPath();ctx.roundRect(8,8,W-16,H-16,18);ctx.stroke(); }
+  else { ctx.strokeRect(8,8,W-16,H-16); }
+
+  // "WAVE" label
+  ctx.fillStyle='rgba(255,160,50,0.60)';
+  ctx.font='bold 28px monospace';
+  ctx.textAlign='center';
+  ctx.fillText('WAVE', W/2, 58);
+
+  // Wave number — large, glowing orange
+  ctx.fillStyle='#ff6600';
+  ctx.shadowColor='#ff4400'; ctx.shadowBlur=28;
+  ctx.font='bold 96px monospace';
+  ctx.fillText(waveNum, W/2, 148);
+  ctx.shadowBlur=0;
+
+  // Scanline accent under the number
+  ctx.strokeStyle='rgba(255,102,0,0.30)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(60,162); ctx.lineTo(W-60,162); ctx.stroke();
+
+  const tex=new THREE.CanvasTexture(cv);
+  const mat=new THREE.MeshBasicMaterial({
+    map:tex, transparent:true, opacity:0,
+    side:THREE.DoubleSide, depthWrite:false
+  });
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(3.2,1.2), mat);
+  mesh.userData={ age:0, phase:'in' };  // phases: 'in' | 'hold' | 'out'
+
+  // Position 8 m ahead of camera at eye level, always facing player
+  const fwd=new THREE.Vector3();
+  camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  mesh.position.copy(camPos).addScaledVector(fwd, 8);
+  mesh.position.y=camPos.y+0.2; // slight upward offset from eye centre
+  mesh.lookAt(camPos); // face the player
+
+  scene.add(mesh);
+  waveBillboard=mesh;
+}
+
+function updateWaveBanner(dt){
+  if(!waveBillboard) return;
+  const ud=waveBillboard.userData;
+  ud.age+=dt;
+
+  const FADE_IN=0.5, HOLD=2.2, FADE_OUT=1.0;
+
+  if(ud.phase==='in'){
+    waveBillboard.material.opacity=Math.min(1, ud.age/FADE_IN);
+    if(ud.age>=FADE_IN){ ud.phase='hold'; ud.age=0; }
+  } else if(ud.phase==='hold'){
+    waveBillboard.material.opacity=1;
+    if(ud.age>=HOLD){ ud.phase='out'; ud.age=0; }
+  } else {
+    waveBillboard.material.opacity=Math.max(0, 1-ud.age/FADE_OUT);
+    if(ud.age>=FADE_OUT){
+      // Dispose and remove
+      waveBillboard.material.map.dispose();
+      waveBillboard.material.dispose();
+      waveBillboard.geometry.dispose();
+      scene.remove(waveBillboard);
+      waveBillboard=null;
+    }
+  }
 }
 
 
@@ -1718,7 +2044,9 @@ function loop(time,frame){
     }
   }
   updateExplosions(dt);
-  updateShockwaves(dt); // always runs so in-flight explosions finish even after game over
+  updateShockwaves(dt);
+  updateWaveBanner(dt);
+  updateDust(dt); // always runs so in-flight explosions finish even after game over
 
   updateWeapon(dt,now); // always runs so energy cell still pulses on menus
 
