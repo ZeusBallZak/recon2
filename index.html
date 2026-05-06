@@ -2097,14 +2097,30 @@ function buildWeaponGeometry(type, parent){
     const l=new THREE.PointLight(new THREE.Color(WEAPONS.rocket.pickupCol),2.5,7);parent.add(l);
   }
   else if(type==='dual'){
-    // Two compact pistols side by side
+    // Single unified dual-barrel ion gun
+    // Wide receiver housing both barrels
+    mk(new THREE.BoxGeometry(.14,.058,.26),mat(0x1a1500,.3,.9),0,0,0);
+    // Top heat-sink ridge
+    mk(new THREE.BoxGeometry(.10,.014,.24),mat(0x0e0c00,.2,.9),0,.036,-.01);
+    // Left barrel
+    mk(new THREE.CylinderGeometry(.010,.012,.28,6),mat(0x0e0c00,.1,.98),-.042,.018,-.16,Math.PI/2);
+    // Right barrel
+    mk(new THREE.CylinderGeometry(.010,.012,.28,6),mat(0x0e0c00,.1,.98), .042,.018,-.16,Math.PI/2);
+    // Muzzle bridge connecting both barrels
+    mk(new THREE.BoxGeometry(.10,.022,.016),mat(0x1a1200,.3,.9),0,.018,-.295);
+    // Muzzle glow rings (left + right)
     [-1,1].forEach(s=>{
-      const ox=s*.065;
-      mk(new THREE.BoxGeometry(.06,.05,.14),mat(0x1a1500,.3,.9),ox,0,0);
-      mk(new THREE.CylinderGeometry(.010,.010,.14,6),mat(0x0e0c00,.2,.95),ox,.02,-.10,Math.PI/2);
-      mk(new THREE.BoxGeometry(.025,.07,.04),mat(0x0e0c00,.8,.2),ox,-.055,.035);
-      const l=new THREE.PointLight(new THREE.Color(WEAPONS.dual.pickupCol),1,4);l.position.set(ox,0,0);parent.add(l);
+      mk(new THREE.TorusGeometry(.013,.004,5,12),mat(0xffcc00,.1,.4,0xffaa00,3),s*.042,.018,-.302,Math.PI/2);
     });
+    // Single centred grip
+    mk(new THREE.BoxGeometry(.048,.09,.048),mat(0x0e0c00,.8,.2),0,-.072,.04);
+    // Trigger guard
+    mk(new THREE.TorusGeometry(.024,.005,5,12,Math.PI),mat(0x1a1500,.4,.7),0,-.04,.005,Math.PI/2);
+    // Trigger
+    mk(new THREE.BoxGeometry(.005,.022,.010),mat(0x0d0c00,.6,.3),0,-.040,.048);
+    // Gold energy magazine
+    mk(new THREE.BoxGeometry(.10,.038,.10),new THREE.MeshStandardMaterial({color:0xffcc00,roughness:.08,emissive:0xffaa00,emissiveIntensity:2.2,transparent:true,opacity:.85}),0,-.052,.025);
+    const l=new THREE.PointLight(new THREE.Color(WEAPONS.dual.pickupCol),2,7);parent.add(l);
   }
   else if(type==='flame'){
     // Round tank + bent nozzle tube
