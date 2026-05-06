@@ -83,6 +83,8 @@ canvas{display:block;width:100%;height:100%;}
 // ── Scene globals ──────────────────────────────────────────────────────
 let renderer, scene, camera, dolly, clock;
 let terrainU, jupU;
+let terrainMesh=null;          // reference for floor raycasting
+const floorRay=new THREE.Raycaster(); // downward ray for terrain collision
 
 // Controllers — assigned by handedness on 'connected' event
 let rightCtrl=null, leftCtrl=null, rightGrip=null, leftGrip=null;
@@ -420,9 +422,10 @@ function buildJupiter(){
 
 function buildTerrain(){
   terrainU={uTime:{value:0}};
-  // 100×100 — good quality/performance balance for Quest 3
+  // 100×100 segments — good quality/performance balance for Quest 3
   const geo=new THREE.PlaneGeometry(700,700,100,100);geo.rotateX(-Math.PI/2);
-  scene.add(new THREE.Mesh(geo,new THREE.ShaderMaterial({uniforms:terrainU,vertexShader:ioV,fragmentShader:ioF})));
+  terrainMesh=new THREE.Mesh(geo,new THREE.ShaderMaterial({uniforms:terrainU,vertexShader:ioV,fragmentShader:ioF}));
+  scene.add(terrainMesh);
 }
 
 function buildRocks(){
@@ -841,7 +844,7 @@ function startGame(){
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
   playerVY=0;isGrounded=true;
   fireCooldown=0;
-  dolly.position.set(0,sampleGround(0,0),0);
+  dolly.position.set(0, getTerrainMeshHeight(0,0), 0);
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
   drawHUD();
 }
@@ -1131,34 +1134,33 @@ function updatePlayer(dt){
   dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
   dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
 
-  // ── Vertical jump physics ────────────────────────────────────────
-  const groundY=sampleGround(dolly.position.x,dolly.position.z);
-  if(!isGrounded){
-    playerVY-=IO_GRAVITY*dt;
-    dolly.position.y+=playerVY*dt;
-    if(dolly.position.y<=groundY){
-      dolly.position.y=groundY;
-      playerVY=0;isGrounded=true;
-      haptic('right',0.6,80);haptic('left',0.5,70);
-      drawHUD();
+  // ── Floor raycaster — hits actual terrain mesh triangles ───────────
+  // Cast a ray straight down from well above the dolly. The hit point
+  // is the true rendered surface — no math approximation, no camera.getWorldPosition()
+  // (which is broken in Three.js r128 WebXR when camera has a parent).
+  // dolly.y = hit.y so XR local-floor places the camera at hit + physical head height (~1.7m).
+  // The 2-unit raise on the ray origin ensures the ray always starts above terrain
+  // even on steep slopes when moving fast.
+  const PLAYER_FLOOR_OFFSET = 0.0;  // dolly sits exactly on the surface; XR adds head height
+  const _rayOrigin = new THREE.Vector3(dolly.position.x, dolly.position.y + 80, dolly.position.z);
+  floorRay.set(_rayOrigin, new THREE.Vector3(0, -1, 0));
+  const floorHits = floorRay.intersectObject(terrainMesh, false);
+  if(floorHits.length > 0){
+    const hitY = floorHits[0].point.y + PLAYER_FLOOR_OFFSET;
+    if(!isGrounded){
+      // Airborne — apply Io gravity
+      playerVY -= IO_GRAVITY * dt;
+      dolly.position.y += playerVY * dt;
+      if(dolly.position.y <= hitY){   // landed
+        dolly.position.y = hitY;
+        playerVY = 0; isGrounded = true;
+        haptic('right',0.6,80); haptic('left',0.5,70);
+        drawHUD();
+      }
+    } else {
+      // Grounded — smoothly follow terrain (lerp prevents jarring steps)
+      dolly.position.y = THREE.MathUtils.lerp(dolly.position.y, hitY, Math.min(1, dt * 20));
     }
-  }else{
-    dolly.position.y=groundY;
-  }
-
-  // ── Hard floor enforcement ────────────────────────────────────────
-  // All previous approaches estimate camera height indirectly.
-  // In WebXR the camera's world XZ differs from the dolly's (user leans),
-  // and XR head height varies per user. Direct measurement is the only
-  // reliable fix: read the camera's actual world position, sample terrain
-  // at that XZ, and push dolly up if the camera would clip through.
-  // This runs AFTER all dolly movement so it sees the final position.
-  const _camActual=new THREE.Vector3();
-  camera.getWorldPosition(_camActual);
-  const terrainBelowCam=getTerrainMeshHeight(_camActual.x,_camActual.z);
-  const minCamY=terrainBelowCam+2.0;    // camera must stay ≥ 2 m above terrain
-  if(_camActual.y<minCamY){
-    dolly.position.y+=(minCamY-_camActual.y);
   }
 
   // Shield passive regen
