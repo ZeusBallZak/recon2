@@ -411,7 +411,7 @@ function buildWorld(){
 
 function buildStarfield(){
   // Main field — 10 k stars (Quest 3 budget)
-  const N=10000,p=new Float32Array(N*3),c=new Float32Array(N*3);
+  const N=6000,p=new Float32Array(N*3),c=new Float32Array(N*3);
   const pal=[[1,.9,.8],[.65,.78,1],[1,.72,.55],[.92,.92,1],[1,1,.72],[.8,.95,1]];
   for(let i=0;i<N;i++){
     const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1),r=2200+Math.random()*400;
@@ -423,7 +423,7 @@ function buildStarfield(){
   scene.add(new THREE.Points(sg,new THREE.PointsMaterial({size:1.8,sizeAttenuation:true,vertexColors:true,transparent:true,opacity:.92,depthWrite:false})));
 
   // Milky Way band — 5 k
-  const MW=5000,ta=1.05,mp=new Float32Array(MW*3),mc=new Float32Array(MW*3);
+  const MW=3000,ta=1.05,mp=new Float32Array(MW*3),mc=new Float32Array(MW*3);
   for(let i=0;i<MW;i++){
     const th=Math.random()*Math.PI*2,bw=Math.random()-.5;
     const ph=Math.PI/2+bw*.18*(1+2*Math.abs(bw)),r=1850+Math.random()*200;
@@ -437,7 +437,7 @@ function buildStarfield(){
   scene.add(new THREE.Points(mwg,new THREE.PointsMaterial({size:1.4,vertexColors:true,transparent:true,opacity:.75,depthWrite:false,blending:THREE.AdditiveBlending})));
 
   // Nebula blobs — 80
-  const NB=80,nbp=new Float32Array(NB*3),nbc=new Float32Array(NB*3);
+  const NB=40,nbp=new Float32Array(NB*3),nbc=new Float32Array(NB*3);
   const npal=[[.4,.15,.7],[.1,.25,.8],[.7,.1,.3],[0,.45,.55],[.5,.3,.1]];
   for(let i=0;i<NB;i++){
     const th=Math.random()*Math.PI*2,ph=(Math.random()-.5)*.7+Math.PI/2,r=1650;
@@ -494,7 +494,7 @@ function buildRocks(){
   // LOD1 (30–70 u): BoxGeometry                  — 12 triangles
   // LOD2 (> 70 u):  invisible (sub-pixel at range)
   const rc=[0xc8a020,0xd46010,0x904010,0x504030,0xe0c060,0x806040,0x302010];
-  for(let i=0;i<60;i++){
+  for(let i=0;i<40;i++){
     const x=(Math.random()-.5)*500, z=(Math.random()-.5)*500;
     const h=getH(x,z), sz=.4+Math.random()**2*5;
     const col=rc[Math.floor(Math.random()*rc.length)];
@@ -553,7 +553,7 @@ function buildVolcanoes(){
 }
 
 function buildPlume(ox,oy,oz){
-  const N=200,geo=new THREE.BufferGeometry();
+  const N=120,geo=new THREE.BufferGeometry();
   const pos=new Float32Array(N*3),vel=[],life=new Float32Array(N).map(()=>Math.random());
   for(let i=0;i<N;i++){
     const a=Math.random()*Math.PI*2,r=Math.random()*3;
@@ -1057,7 +1057,7 @@ function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
   if(isEnemy){
     grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.008,.008,LEN,5),new THREE.MeshBasicMaterial({color:0xff2200})));
     const u={uTime:{value:0},uColor:{value:new THREE.Color(.9,.12,0)}};
-    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,LEN,12,1,true),new THREE.ShaderMaterial({uniforms:u,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
+    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,LEN,6,1,true),new THREE.ShaderMaterial({uniforms:u,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
     grp.add(new THREE.PointLight(0xff2200,3.5,10));
     grp.userData={vel:d.clone().multiplyScalar(boltSpd),age:0,unis:[u],dmg:boltDmg};
     scene.add(grp);eBolts.push(grp);
@@ -1066,8 +1066,8 @@ function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
     grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.010,.010,LEN,7),new THREE.MeshBasicMaterial({color:0xffffff})));
     const u1={uTime:{value:0},uColor:{value:new THREE.Color(0,.67,1)}};
     const u2={uTime:{value:0},uColor:{value:new THREE.Color(.27,.8,1)}};
-    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.060,.060,LEN,14,1,true),new THREE.ShaderMaterial({uniforms:u1,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
-    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.030,.030,LEN*1.02,10,1,true),new THREE.ShaderMaterial({uniforms:u2,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
+    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.060,.060,LEN,8,1,true),new THREE.ShaderMaterial({uniforms:u1,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
+    grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.030,.030,LEN*1.02,6,1,true),new THREE.ShaderMaterial({uniforms:u2,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
     grp.add(new THREE.PointLight(0x22aaff,4,12));
     grp.userData={vel:d.clone().multiplyScalar(95),age:0,unis:[u1,u2]};
     scene.add(grp);pBolts.push(grp);
@@ -1147,23 +1147,14 @@ function spawnEnemy(){
   g.add(body);
 
   // Sensor eye
-  const eye=new THREE.Mesh(new THREE.SphereGeometry(.3*T.scale,8,6),new THREE.MeshBasicMaterial({color:T.eyeColor}));
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(.3*T.scale,6,4),new THREE.MeshBasicMaterial({color:T.eyeColor}));
   eye.position.z=.95*T.scale;g.add(eye);
   const eL=new THREE.PointLight(T.lightColor,T.lightInt,5*T.scale);eL.position.copy(eye.position);g.add(eL);
 
-  // Orbital rings — count varies by type
-  const rings=[];
-  for(let i=0;i<T.rings;i++){
-    const r=new THREE.Mesh(new THREE.TorusGeometry((1.4+i*.35)*T.scale,.055*T.scale,5,16),
-      new THREE.MeshBasicMaterial({color:T.ringColor,transparent:true,opacity:T.ringOpacity}));
-    r.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
-    g.add(r);rings.push(r);
-  }
-
-  // Heavy type gets an extra armour shell
+  // Heavy type gets an extra armour shell (no rings — too many faces)
   if(type==='heavy'){
     const shell=new THREE.Mesh(new THREE.IcosahedronGeometry(bSize*1.15,0),
-      new THREE.MeshStandardMaterial({color:0x331100,roughness:.6,metalness:.9,transparent:true,opacity:.55,wireframe:false}));
+      new THREE.MeshStandardMaterial({color:0x331100,roughness:.6,metalness:.9,transparent:true,opacity:.55}));
     g.add(shell);
   }
 
@@ -1190,8 +1181,8 @@ function spawnEnemy(){
     shootDelay:T.shootDelay, shootRand:T.shootRand,
     boltSpeed:T.boltSpeed, boltDmg:T.boltDmg,
     hoverPhase:Math.random()*Math.PI*2, hoverH,
-    rings,eye,eL,body,isDying:false,
-    lodBodies:[body,lod1,lod2,lod3], lastLOD:-1, // -1 forces initial switch
+    eye,eL,body,isDying:false,
+    lodBodies:[body,lod1,lod2,lod3], lastLOD:-1,
     baseLightInt:T.lightInt
   };
   scene.add(g);enemies.push(g);
@@ -1200,6 +1191,7 @@ function spawnEnemy(){
 }
 
 const _camWP=new THREE.Vector3();
+const _toP=new THREE.Vector3(); // scratch — reused every enemy update, no per-frame alloc
 function updateEnemies(dt){
   camera.getWorldPosition(_camWP);
   const dead=[];
@@ -1207,7 +1199,7 @@ function updateEnemies(dt){
     const ud=e.userData;if(ud.isDying){dead.push(e);continue;}
     ud.hoverPhase+=dt*2.2;
     e.position.y=getH(e.position.x,e.position.z)+ud.hoverH+Math.sin(ud.hoverPhase)*.6;
-    const toP=new THREE.Vector3().subVectors(_camWP,e.position),dist=toP.length();
+    const toP=_toP.subVectors(_camWP,e.position),dist=toP.length();
     e.rotation.y=Math.atan2(toP.x,toP.z);
 
     // ── LOD switching — only triggers on level change ──────────────
@@ -1216,17 +1208,13 @@ function updateEnemies(dt){
       ud.lastLOD=newLOD;
       // Swap which body mesh is visible
       ud.lodBodies.forEach((b,i)=>{ b.visible=(i===newLOD); });
-      // Rings: only render at close range (most expensive element per enemy)
-      ud.rings.forEach(r=>{ r.visible=(newLOD===0); });
       // Eye: visible at LOD 0–2, hidden only at extreme distance
       if(ud.eye) ud.eye.visible=(newLOD<=2);
       // Light: full at 0, dim at 1, off at 2–3
       if(ud.eL) ud.eL.intensity=newLOD===0?ud.baseLightInt:newLOD===1?ud.baseLightInt*.35:0;
     }
 
-    // Animate rings and light flicker only when close enough to matter
     if(newLOD===0){
-      for(const r of ud.rings){r.rotation.x+=dt*1.2;r.rotation.y+=dt*.8;}
       ud.eL.intensity=(.8+.2*Math.sin(ud.hoverPhase*3))*ud.baseLightInt;
     }
     if(dist>10) updateEnemyAI(e,ud,toP,dist,dt);
@@ -3126,20 +3114,15 @@ function spawnBoss(){
   const bGeo=new THREE.OctahedronGeometry(1.1*scale,1); // detail=1 for boss
   const body=new THREE.Mesh(bGeo,new THREE.MeshStandardMaterial({color:0x220000,roughness:.2,metalness:.9,emissive:0x880000,emissiveIntensity:.8}));
   g.add(body);
-  const eye=new THREE.Mesh(new THREE.SphereGeometry(.5*scale,10,8),new THREE.MeshBasicMaterial({color:0xff0000}));
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(.5*scale,8,6),new THREE.MeshBasicMaterial({color:0xff0000}));
   eye.position.z=1.5*scale;g.add(eye);
   const eL=new THREE.PointLight(0xff2200,5,20);eL.position.copy(eye.position);g.add(eL);
-  const rings=[];
-  for(let i=0;i<6;i++){
-    const r=new THREE.Mesh(new THREE.TorusGeometry((2+i*.4)*scale,.08*scale,6,24),new THREE.MeshBasicMaterial({color:0xaa0000,transparent:true,opacity:.65}));
-    r.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);g.add(r);rings.push(r);
-  }
-  const h=getH(px-40,pz-40);
-  g.position.set(px-40,h+8,pz-40);
   const lod1=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,6,5),body.material.clone());lod1.visible=false;g.add(lod1);
   const lod2=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,4,3),body.material.clone());lod2.visible=false;g.add(lod2);
+  const bh=getH(px-40,pz-40);
+  g.position.set(px-40,bh+8,pz-40);
   g.userData={type:'boss',hp:50,maxHp:50,speed:2.5,shootTimer:.8,shootDelay:.8,shootRand:.5,
-    boltSpeed:18,boltDmg:20,hoverPhase:0,hoverH:8,rings,eye,eL,body,isDying:false,
+    boltSpeed:18,boltDmg:20,hoverPhase:0,hoverH:8,eye,eL,body,isDying:false,
     lodBodies:[body,lod1,lod2],lastLOD:-1,baseLightInt:5,chargeCool:0,charging:false,chargeTimer:0};
   scene.add(g);enemies.push(g);bossEnemy=g;
   speak('Boss drone incoming');
@@ -3254,40 +3237,10 @@ function updateEnemyHums(){}
 function stopEnemyHum(e){}
 function stopAllEnemyHums(){}
 
-// ════════════════════════════════════════════════════════════════
-//  GENERATIVE MUSIC  — state-reactive ambient / combat scoring
-// ════════════════════════════════════════════════════════════════
-function startMusic(){
-  const ctx=getAudio();if(!ctx||musicNodes)return;
-  const master=ctx.createGain();master.gain.value=0.18;master.connect(ctx.destination);
-  // Bass drone
-  const bass=ctx.createOscillator();bass.type='sine';bass.frequency.value=55;
-  const bassG=ctx.createGain();bassG.gain.value=.6;bass.connect(bassG);bassG.connect(master);
-  // Pad (slightly detuned)
-  const pad=ctx.createOscillator();pad.type='triangle';pad.frequency.value=55.3;
-  const padG=ctx.createGain();padG.gain.value=.35;pad.connect(padG);padG.connect(master);
-  // High pulse
-  const pulse=ctx.createOscillator();pulse.type='square';pulse.frequency.value=220;
-  const pulseG=ctx.createGain();pulseG.gain.value=0;pulse.connect(pulseG);pulseG.connect(master);
-  // LFO on bass
-  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=.12;
-  const lfoG=ctx.createGain();lfoG.gain.value=12;lfo.connect(lfoG);lfoG.connect(bass.frequency);
-  bass.start();pad.start();pulse.start();lfo.start();
-  musicNodes={bass,pad,pulse,pulseG,master};
-}
-function updateMusic(){
-  if(!musicNodes)return;
-  const intensity=Math.min(1,(enemies.length/12)+.1);
-  // Ramp pulse gain with enemy count (combat intensity)
-  const target=intensity>.4?.08+intensity*.18:0;
-  musicNodes.pulseG.gain.setTargetAtTime(target,getAudio().currentTime,.8);
-  musicNodes.master.gain.setTargetAtTime(.12+intensity*.12,getAudio().currentTime,1.5);
-}
-function stopMusic(){
-  if(!musicNodes)return;
-  try{musicNodes.bass.stop();musicNodes.pad.stop();musicNodes.pulse.stop();}catch(e){}
-  musicNodes=null;
-}
+// Generative music removed — constant oscillator drones caused unwanted buzz on Quest 3
+function startMusic(){}
+function updateMusic(){}
+function stopMusic(){}
 
 // ════════════════════════════════════════════════════════════════
 //  FOOTSTEP SOUNDS  — crunch when moving on Io surface
