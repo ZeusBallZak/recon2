@@ -184,17 +184,13 @@ function sampleGround(x, z) {
 
 // ── Io Terrain ──────────────────────────────────────────────────
 const ioV=`
-uniform float uTime;
 varying vec2 vUv;varying float vH;varying vec3 vN,vPos;
-float hh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float nn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hh(i),hh(i+vec2(1,0)),f.x),mix(hh(i+vec2(0,1)),hh(i+vec2(1,1)),f.x),f.y);}
-float fb(vec2 p){float v=0.,a=.5;vec2 s=vec2(0,100);for(int i=0;i<6;i++){v+=a*nn(p+s);p*=2.;s+=vec2(31.7,17.3);a*=.5;}return v;}
-float hAt(vec2 xz){return fb(xz*.05)*8.+fb(xz*.2)*2.;}
 void main(){
-  vUv=uv;vec3 pos=position;float h=hAt(pos.xz);pos.y+=h;vH=h;vPos=pos;
-  float e=.8,hx=hAt(pos.xz+vec2(e,0.)),hz=hAt(pos.xz+vec2(0.,e));
-  vN=normalMatrix*normalize(cross(vec3(0.,hz-h,e),vec3(e,hx-h,0.)));
-  gl_Position=projectionMatrix*modelViewMatrix*vec4(pos,1.);}`;
+  vUv=uv;
+  vH=position.y;       // height already baked into vertex positions on CPU
+  vPos=position;
+  vN=normalMatrix*normal; // normals computed by geo.computeVertexNormals() on CPU
+  gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
 
 const ioF=`
 uniform float uTime;
@@ -422,9 +418,32 @@ function buildJupiter(){
 
 function buildTerrain(){
   terrainU={uTime:{value:0}};
-  // 100×100 segments — good quality/performance balance for Quest 3
-  const geo=new THREE.PlaneGeometry(700,700,100,100);geo.rotateX(-Math.PI/2);
-  terrainMesh=new THREE.Mesh(geo,new THREE.ShaderMaterial({uniforms:terrainU,vertexShader:ioV,fragmentShader:ioF}));
+
+  // ── CPU vertex displacement ──────────────────────────────────────────
+  // Displace all vertices using the same FBM as the old GLSL vertex shader.
+  // Doing this on the CPU means:
+  //  • The GPU renders exactly what the CPU geometry says (no shader-only displacement).
+  //  • Raycaster.intersectObject() hits the true rendered surface — not a flat plane.
+  //  • Player floor collision is 100% accurate with zero approximation error.
+  // The fragment shader (coloring) is unchanged — it still uses vH, vPos, vN.
+  const segs=100;
+  const geo=new THREE.PlaneGeometry(700,700,segs,segs);
+  geo.rotateX(-Math.PI/2);  // lay flat in XZ plane
+
+  // After rotateX, getX(i)/getZ(i) are the world XZ coords of each vertex
+  const pos=geo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i), z=pos.getZ(i);
+    pos.setY(i, getH(x,z));  // getH mirrors the GLSL hAt() exactly
+  }
+  pos.needsUpdate=true;
+  geo.computeVertexNormals();  // smooth normals from actual triangle geometry
+
+  terrainMesh=new THREE.Mesh(geo,new THREE.ShaderMaterial({
+    uniforms:terrainU,
+    vertexShader:ioV,
+    fragmentShader:ioF
+  }));
   scene.add(terrainMesh);
 }
 
@@ -1134,39 +1153,30 @@ function updatePlayer(dt){
   dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
   dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
 
-  // ── Floor collision — CPU heightmap mirrors the vertex shader exactly ──
-  // The raycaster cannot be used here: the terrain is GPU-displaced by the
-  // vertex shader, so the CPU geometry buffer is still a flat plane at Y=0.
-  // getTerrainMeshHeight() bilinearly interpolates the same FBM the GLSL uses,
-  // matching the rendered surface precisely.
-  //
-  // camera.getWorldPosition() is broken in Three.js r128 WebXR when the camera
-  // has a parent — it double-counts the transform. We read the XR head pose
-  // directly from camera.matrixWorld instead, which is always correct.
-  const _headPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  const terrainY  = getTerrainMeshHeight(dolly.position.x, dolly.position.z);
-  const groundY   = terrainY;   // dolly sits at terrain; XR local-floor adds physical head height
-
-  if(!isGrounded){
-    playerVY -= IO_GRAVITY * dt;
-    dolly.position.y += playerVY * dt;
-    if(dolly.position.y <= groundY){
-      dolly.position.y = groundY;
-      playerVY = 0; isGrounded = true;
-      haptic('right',0.6,80); haptic('left',0.5,70);
-      drawHUD();
+  // ── Floor collision via raycaster ───────────────────────────────────
+  // Terrain vertices are now displaced on the CPU (not the GPU shader),
+  // so intersectObject() hits the exact rendered surface every time.
+  // Ray fires straight down from 60 units above dolly — always above terrain.
+  floorRay.set(
+    new THREE.Vector3(dolly.position.x, dolly.position.y+60, dolly.position.z),
+    new THREE.Vector3(0,-1,0)
+  );
+  const hits=floorRay.intersectObject(terrainMesh,false);
+  if(hits.length>0){
+    const groundY=hits[0].point.y;  // exact surface Y from real mesh triangles
+    if(!isGrounded){
+      playerVY-=IO_GRAVITY*dt;
+      dolly.position.y+=playerVY*dt;
+      if(dolly.position.y<=groundY){
+        dolly.position.y=groundY;
+        playerVY=0;isGrounded=true;
+        haptic('right',0.6,80);haptic('left',0.5,70);
+        drawHUD();
+      }
+    }else{
+      // Smooth follow — lerp snaps up slopes without jarring jumps
+      dolly.position.y=THREE.MathUtils.lerp(dolly.position.y,groundY,Math.min(1,dt*20));
     }
-  } else {
-    // Smooth terrain following — lerp prevents jarring jumps on steep slopes
-    dolly.position.y = THREE.MathUtils.lerp(dolly.position.y, groundY, Math.min(1, dt * 20));
-  }
-
-  // ── Absolute floor guarantee ────────────────────────────────────────────
-  // After all movement, if the XR head (read from matrixWorld) is still below
-  // the terrain surface, push the dolly up by the exact deficit.
-  // This catches edge cases: fast movement up steep slopes, frame-rate spikes, etc.
-  if(_headPos.y < terrainY + 2.0){
-    dolly.position.y += (terrainY + 2.0 - _headPos.y);
   }
 
   // Shield passive regen
