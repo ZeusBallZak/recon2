@@ -1134,33 +1134,39 @@ function updatePlayer(dt){
   dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
   dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
 
-  // ── Floor raycaster — hits actual terrain mesh triangles ───────────
-  // Cast a ray straight down from well above the dolly. The hit point
-  // is the true rendered surface — no math approximation, no camera.getWorldPosition()
-  // (which is broken in Three.js r128 WebXR when camera has a parent).
-  // dolly.y = hit.y so XR local-floor places the camera at hit + physical head height (~1.7m).
-  // The 2-unit raise on the ray origin ensures the ray always starts above terrain
-  // even on steep slopes when moving fast.
-  const PLAYER_FLOOR_OFFSET = 0.0;  // dolly sits exactly on the surface; XR adds head height
-  const _rayOrigin = new THREE.Vector3(dolly.position.x, dolly.position.y + 80, dolly.position.z);
-  floorRay.set(_rayOrigin, new THREE.Vector3(0, -1, 0));
-  const floorHits = floorRay.intersectObject(terrainMesh, false);
-  if(floorHits.length > 0){
-    const hitY = floorHits[0].point.y + PLAYER_FLOOR_OFFSET;
-    if(!isGrounded){
-      // Airborne — apply Io gravity
-      playerVY -= IO_GRAVITY * dt;
-      dolly.position.y += playerVY * dt;
-      if(dolly.position.y <= hitY){   // landed
-        dolly.position.y = hitY;
-        playerVY = 0; isGrounded = true;
-        haptic('right',0.6,80); haptic('left',0.5,70);
-        drawHUD();
-      }
-    } else {
-      // Grounded — smoothly follow terrain (lerp prevents jarring steps)
-      dolly.position.y = THREE.MathUtils.lerp(dolly.position.y, hitY, Math.min(1, dt * 20));
+  // ── Floor collision — CPU heightmap mirrors the vertex shader exactly ──
+  // The raycaster cannot be used here: the terrain is GPU-displaced by the
+  // vertex shader, so the CPU geometry buffer is still a flat plane at Y=0.
+  // getTerrainMeshHeight() bilinearly interpolates the same FBM the GLSL uses,
+  // matching the rendered surface precisely.
+  //
+  // camera.getWorldPosition() is broken in Three.js r128 WebXR when the camera
+  // has a parent — it double-counts the transform. We read the XR head pose
+  // directly from camera.matrixWorld instead, which is always correct.
+  const _headPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const terrainY  = getTerrainMeshHeight(dolly.position.x, dolly.position.z);
+  const groundY   = terrainY;   // dolly sits at terrain; XR local-floor adds physical head height
+
+  if(!isGrounded){
+    playerVY -= IO_GRAVITY * dt;
+    dolly.position.y += playerVY * dt;
+    if(dolly.position.y <= groundY){
+      dolly.position.y = groundY;
+      playerVY = 0; isGrounded = true;
+      haptic('right',0.6,80); haptic('left',0.5,70);
+      drawHUD();
     }
+  } else {
+    // Smooth terrain following — lerp prevents jarring jumps on steep slopes
+    dolly.position.y = THREE.MathUtils.lerp(dolly.position.y, groundY, Math.min(1, dt * 20));
+  }
+
+  // ── Absolute floor guarantee ────────────────────────────────────────────
+  // After all movement, if the XR head (read from matrixWorld) is still below
+  // the terrain surface, push the dolly up by the exact deficit.
+  // This catches edge cases: fast movement up steep slopes, frame-rate spikes, etc.
+  if(_headPos.y < terrainY + 2.0){
+    dolly.position.y += (terrainY + 2.0 - _headPos.y);
   }
 
   // Shield passive regen
