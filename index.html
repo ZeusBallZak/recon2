@@ -854,9 +854,10 @@ function buildChargeFX(){
 // Returns the tip offset in rightGrip local space for the current weapon
 // (after weaponGroup's scale 1.5× and position are applied)
 function getWeaponTipOffset(){
-  // Saber: blade tip is at weapon-local (0, 0.09+0.70, 0) = (0, 0.79, 0)
-  // after scale 1.5 → y = 1.185 + grip offset y 0.108 = 1.293
-  if(currentWeapon==='saber') return new THREE.Vector3(0.01*1.5, 0.108+1.185, -0.135);
+  // Saber: blade now points along -Z (after 90° X rotation).
+  // Blade is 0.70 units long in weapon space; at scale 1.5× = 1.05 world units.
+  // Tip is at grip offset z (-0.135) minus blade length (-1.05) = -1.185
+  if(currentWeapon==='saber') return new THREE.Vector3(0.01*1.5, 0.108, -0.135-1.05);
   // All gun-type weapons: muzzle tip at weapon-local (0, 0.002, -0.488)
   // after scale 1.5 → z = -0.732; add grip offset
   return new THREE.Vector3(0.01*1.5, 0.108+0.003, -0.135-0.732);
@@ -2008,19 +2009,25 @@ function buildWeaponGeometry(type, parent){
   }
   else if(type==='saber'){
     // Volt Saber — Light Saber × Zelda Master Sword hybrid
+    // Rotated 90° around X so the blade points forward (-Z) matching
+    // the Quest 3 controller grip orientation. Handle sits at the grip.
+    const sg=new THREE.Group(); sg.rotation.x=Math.PI/2; parent.add(sg);
+    const smk=(g,m,x=0,y=0,z=0,rx=0,ry=0,rz=0)=>{
+      const ms=new THREE.Mesh(g,m);ms.position.set(x,y,z);
+      if(rx||ry||rz)ms.rotation.set(rx,ry,rz);sg.add(ms);return ms;};
     // Glowing blade (long, thin, emissive white-cyan)
-    const blade=mk(new THREE.CylinderGeometry(.018,.022,.70,8),new THREE.MeshStandardMaterial({color:0xaaffff,emissive:0x44ffff,emissiveIntensity:4.5,roughness:0,metalness:.1}),0,.45,0);
-    mk(new THREE.CylinderGeometry(.024,.016,.70,8),glow(0x00ffff,.5),0,.45,0);// outer glow
-    // Master Sword crossguard (three-wing Zelda style)
-    mk(new THREE.BoxGeometry(.18,.025,.030),mat(0xccaa22,.2,.95,0xaacc44,1),0,.09,0); // main bar
-    mk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1),-.09,.09,.015);// left wing
-    mk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1), .09,.09,.015);// right wing
+    smk(new THREE.CylinderGeometry(.018,.022,.70,8),new THREE.MeshStandardMaterial({color:0xaaffff,emissive:0x44ffff,emissiveIntensity:4.5,roughness:0,metalness:.1}),0,.45,0);
+    smk(new THREE.CylinderGeometry(.024,.016,.70,8),glow(0x00ffff,.5),0,.45,0);// outer glow
+    // Master Sword crossguard
+    smk(new THREE.BoxGeometry(.18,.025,.030),mat(0xccaa22,.2,.95,0xaacc44,1),0,.09,0);
+    smk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1),-.09,.09,.015);
+    smk(new THREE.BoxGeometry(.025,.025,.055),mat(0xccaa22,.2,.95,0xaacc44,1), .09,.09,.015);
     // Handle
-    mk(new THREE.CylinderGeometry(.018,.022,.16,8),mat(0x442200,.8,.2),0,-.005,0);
-    for(let i=0;i<5;i++) mk(new THREE.TorusGeometry(.022,.004,5,12),mat(0xccaa22,.2,.9),0,-.01+i*.028,0,Math.PI/2);
+    smk(new THREE.CylinderGeometry(.018,.022,.16,8),mat(0x442200,.8,.2),0,-.005,0);
+    for(let i=0;i<5;i++) smk(new THREE.TorusGeometry(.022,.004,5,12),mat(0xccaa22,.2,.9),0,-.01+i*.028,0,Math.PI/2);
     // Triforce pommel gem
-    mk(new THREE.OctahedronGeometry(.028),new THREE.MeshStandardMaterial({color:0xffdd00,emissive:0xffaa00,emissiveIntensity:3}),0,-.09,0);
-    const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);parent.add(l);
+    smk(new THREE.OctahedronGeometry(.028),new THREE.MeshStandardMaterial({color:0xffdd00,emissive:0xffaa00,emissiveIntensity:3}),0,-.09,0);
+    const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);sg.add(l);
   }
   else if(type==='scatter'){
     // Icosahedron body + 8 spike barrels
