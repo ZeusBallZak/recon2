@@ -1706,7 +1706,7 @@ function playPlayerShot(){
 // where v_radial = component of bolt velocity toward the camera,
 // giving a rising whine on approach and a falling growl on pass.
 const BUZZ_C = 55;
-const BUZZ_F0 = 95;  // lowered from 230 Hz — deep alien growl instead of high buzz
+const BUZZ_F0 = 150;  // slightly higher than 95 Hz — audible growl with Doppler range
 
 function createBoltBuzz(bolt){
   const ctx=getAudio();if(!ctx)return;
@@ -2132,11 +2132,22 @@ const PICKUP_TYPES=['shotgun','grenade','saber','scatter','rail','rocket','dual'
 function buildPickupMesh(type){
   const g=new THREE.Group();
   buildWeaponGeometry(type, g);
-  g.scale.setScalar(0.55); // smaller for pickup
-  // Glow ring on ground
+  g.scale.setScalar(1.1); // doubled from 0.55
+  // Ground ring (weapon colour)
   const ring=new THREE.Mesh(new THREE.TorusGeometry(.30,.025,6,32),
     new THREE.MeshBasicMaterial({color:WEAPONS[type].pickupCol,transparent:true,opacity:.5,blending:THREE.AdditiveBlending,depthWrite:false}));
   ring.rotation.x=Math.PI/2; ring.position.y=-.45; g.add(ring);
+  // Green inner glow sphere
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.55,10,8),
+    new THREE.MeshBasicMaterial({color:0x00ff44,transparent:true,opacity:.13,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide})));
+  // Green outer halo
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.80,8,6),
+    new THREE.MeshBasicMaterial({color:0x00cc33,transparent:true,opacity:.05,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide})));
+  // Green point light tinting the ground beneath
+  const pl=new THREE.PointLight(0x00ff44,2.5,8);g.add(pl);
+  // Vertical beam pillar rising upward
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,4,6),
+    new THREE.MeshBasicMaterial({color:0x00ff44,transparent:true,opacity:.18,blending:THREE.AdditiveBlending,depthWrite:false})));
   return g;
 }
 
@@ -2165,7 +2176,7 @@ function updatePickups(dt){
   const rem=[];
   for(const p of pickups){
     p.age+=dt;
-    p.mesh.rotation.y+=dt*1.2;
+    p.mesh.rotation.y+=dt*(Math.PI/2); // 90° per second
     p.mesh.position.y+=Math.sin(t*2+p.age)*0.0008;// gentle bob
     // Proximity pickup: 2.5 units from camera world pos
     if(camPos.distanceTo(p.mesh.position)<2.5){
@@ -3237,36 +3248,11 @@ function clearUpgradeCards(){
 // ════════════════════════════════════════════════════════════════
 //  SPATIAL ENEMY HUM  — each drone emits a low buzz from its pos
 // ════════════════════════════════════════════════════════════════
-function startEnemyHum(e){
-  const ctx=getAudio();if(!ctx||enemyHumNodes[e.uuid])return;
-  const pan=ctx.createPanner();
-  pan.panningModel='HRTF';pan.distanceModel='inverse';pan.refDistance=5;pan.maxDistance=60;pan.rolloffFactor=1.2;
-  setPannerPos(pan,e.position);pan.connect(ctx.destination);
-  const osc=ctx.createOscillator();osc.type='sine';
-  const baseF=e.userData.type==='heavy'?18:e.userData.type==='scout'?45:30; // lowered from 42/120/70
-  osc.frequency.value=baseF;
-  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=.4+Math.random()*.3;
-  const lfoG=ctx.createGain();lfoG.gain.value=8;
-  lfo.connect(lfoG);lfoG.connect(osc.frequency);
-  const gain=ctx.createGain();gain.gain.value=.18;
-  osc.connect(gain);gain.connect(pan);
-  osc.start();lfo.start();
-  enemyHumNodes[e.uuid]={osc,lfo,gain,pan};
-}
-function updateEnemyHums(){
-  for(const e of enemies){
-    if(!enemyHumNodes[e.uuid]) startEnemyHum(e);
-    const n=enemyHumNodes[e.uuid];
-    if(n)setPannerPos(n.pan,e.position);
-  }
-}
-function stopEnemyHum(e){
-  const n=enemyHumNodes[e.uuid];if(!n)return;
-  try{n.osc.stop();n.lfo.stop();}catch(ex){}
-  try{n.pan.disconnect();}catch(ex){}
-  delete enemyHumNodes[e.uuid];
-}
-function stopAllEnemyHums(){Object.keys(enemyHumNodes).forEach(id=>{const n=enemyHumNodes[id];try{n.osc.stop();n.lfo.stop();}catch(e){}try{n.pan.disconnect();}catch(e){};});enemyHumNodes={};}
+// Enemy spatial hum removed — no-ops kept so call sites compile cleanly
+function startEnemyHum(e){}
+function updateEnemyHums(){}
+function stopEnemyHum(e){}
+function stopAllEnemyHums(){}
 
 // ════════════════════════════════════════════════════════════════
 //  GENERATIVE MUSIC  — state-reactive ambient / combat scoring
