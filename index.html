@@ -637,55 +637,9 @@ function buildWeaponModel(){
   muzzleSphere=new THREE.Mesh(new THREE.SphereGeometry(.026,6,6),new THREE.MeshBasicMaterial({color:0xaaeeff}));
   muzzleSphere.position.set(0,.002,-.488);muzzleSphere.visible=false;weaponGroup.add(muzzleSphere);
 
-  // ── Charge energy sphere — grows at muzzle tip during super blast charge ──
-  chargeSphere=new THREE.Mesh(
-    new THREE.SphereGeometry(1,14,10),
-    new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,
-      blending:THREE.AdditiveBlending,depthWrite:false})
-  );
-  chargeSphere.position.set(0,.002,-.488); // muzzle tip
-  chargeSphere.scale.setScalar(0.001);
-  weaponGroup.add(chargeSphere);
-
-  // ── Boid particles — 40 points orbiting the charge sphere ──
-  const BOIDS=40;
-  const bPos=new Float32Array(BOIDS*3);
-  chargeBoidData=[];
-  for(let i=0;i<BOIDS;i++){
-    // Random start position near muzzle
-    const th=Math.random()*Math.PI*2, ph=Math.random()*Math.PI;
-    const r=0.04+Math.random()*0.06;
-    bPos[i*3  ]=Math.sin(ph)*Math.cos(th)*r;
-    bPos[i*3+1]=Math.sin(ph)*Math.sin(th)*r;
-    bPos[i*3+2]=Math.cos(ph)*r;
-    chargeBoidData.push({
-      th, ph,
-      speed: 1.2+Math.random()*2.2,   // orbit speed rad/s
-      axis: new THREE.Vector3(
-        Math.random()-.5, Math.random()-.5, Math.random()-.5
-      ).normalize(),
-      r: r
-    });
-  }
-  const bGeo=new THREE.BufferGeometry();
-  bGeo.setAttribute('position',new THREE.BufferAttribute(bPos,3));
-  chargeBoids=new THREE.Points(bGeo,new THREE.PointsMaterial({
-    color:0xaaddff, size:0.022, transparent:true, opacity:0,
-    blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true
-  }));
-  chargeBoids.position.set(0,.002,-.488);
-  weaponGroup.add(chargeBoids);
-
   // ── Position in grip space ──────────────────────────────────
-  // Pistol grip centre sits at weapon-local (0, −0.072, 0.085).
-  // After scale 1.5× → (0, −0.108, 0.1275) in grip local space.
-  // Offset to bring that point to the grip origin (physical hold point):
   weaponGroup.scale.setScalar(1.5);
   weaponGroup.position.set(0.01, 0.108, -0.135);
-  // Quest 3 pitch correction (shared with the animation loop via WEAPON_PITCH):
-  // The controller naturally sits ~30° below horizontal in a comfortable aim
-  // pose. This rotates the barrel down in grip space so a relaxed, level
-  // wrist points the barrel straight ahead — no uncomfortable wrist flexion.
   weaponGroup.rotation.x = WEAPON_PITCH;
 }
 
@@ -855,18 +809,57 @@ function onRightConnected(){
   if(!weaponGroup||!rightGrip)return;
   rightGrip.add(weaponGroup);
   buildMuzzleCone();
+  buildChargeFX();
 
-  // Aim ray — child of weaponGroup so it inherits the barrel's WEAPON_PITCH
-  // rotation and sits exactly along the firing trajectory.
-  // Origin at the muzzle tip (weapon-local 0, 0.002, -0.488); extends 40 m forward.
-  // We counter the parent's scale (1.5×) so the ray length stays in world metres.
-  const rayGeo=new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0,0,0),
-    new THREE.Vector3(0,0,-40/1.5)   // divide by weaponGroup scale so world length = 40 m
-  ]);
+  // Faint aiming ray
+  const rayGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,-40/1.5)]);
   const aimLine=new THREE.Line(rayGeo,new THREE.LineBasicMaterial({color:0x00aaff,transparent:true,opacity:.08,depthWrite:false}));
-  aimLine.position.set(0,0.002,-0.488); // muzzle tip in weapon-local space
+  aimLine.position.set(0,0.002,-0.488);
   weaponGroup.add(aimLine);
+}
+
+// ── Charge FX (sphere + boids) ────────────────────────────────
+// Attached directly to rightGrip as a sibling of weaponGroup so it
+// survives weapon swaps. Position is updated each frame in updateCharge()
+// to match the current weapon's tip in world space.
+let chargeFXGroup=null;
+function buildChargeFX(){
+  if(chargeFXGroup){ rightGrip.remove(chargeFXGroup); chargeFXGroup=null; }
+
+  chargeFXGroup=new THREE.Group();
+
+  // Sphere
+  chargeSphere=new THREE.Mesh(
+    new THREE.SphereGeometry(1,12,8),
+    new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})
+  );
+  chargeSphere.scale.setScalar(0.001);
+  chargeFXGroup.add(chargeSphere);
+
+  // Boids
+  const BOIDS=40,bPos=new Float32Array(BOIDS*3);
+  chargeBoidData=[];
+  for(let i=0;i<BOIDS;i++){
+    const th=Math.random()*Math.PI*2,ph=Math.random()*Math.PI,r=0.04+Math.random()*0.06;
+    bPos[i*3]=Math.sin(ph)*Math.cos(th)*r;bPos[i*3+1]=Math.sin(ph)*Math.sin(th)*r;bPos[i*3+2]=Math.cos(ph)*r;
+    chargeBoidData.push({th,ph,speed:1.2+Math.random()*2.2,axis:new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize(),r});
+  }
+  const bGeo=new THREE.BufferGeometry();bGeo.setAttribute('position',new THREE.BufferAttribute(bPos,3));
+  chargeBoids=new THREE.Points(bGeo,new THREE.PointsMaterial({color:0xaaddff,size:0.022,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,sizeAttenuation:true}));
+  chargeFXGroup.add(chargeBoids);
+
+  rightGrip.add(chargeFXGroup);
+}
+
+// Returns the tip offset in rightGrip local space for the current weapon
+// (after weaponGroup's scale 1.5× and position are applied)
+function getWeaponTipOffset(){
+  // Saber: blade tip is at weapon-local (0, 0.09+0.70, 0) = (0, 0.79, 0)
+  // after scale 1.5 → y = 1.185 + grip offset y 0.108 = 1.293
+  if(currentWeapon==='saber') return new THREE.Vector3(0.01*1.5, 0.108+1.185, -0.135);
+  // All gun-type weapons: muzzle tip at weapon-local (0, 0.002, -0.488)
+  // after scale 1.5 → z = -0.732; add grip offset
+  return new THREE.Vector3(0.01*1.5, 0.108+0.003, -0.135-0.732);
 }
 
 function onLeftConnected(){
@@ -964,6 +957,7 @@ function startGame(){
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
+  currentWeaponIndex=0;
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
@@ -1025,6 +1019,10 @@ function fireWeapon(){
   if(def.ammo!==Infinity&&(weaponAmmoMap[currentWeapon]||0)<=0) return;
   fireCooldown=def.rate;
   if(def.ammo!==Infinity) weaponAmmoMap[currentWeapon]--;
+  // Auto-switch to laser when this weapon is now empty
+  if(def.ammo!==Infinity&&(weaponAmmoMap[currentWeapon]||0)<=0){
+    setTimeout(()=>{ equipWeapon('laser'); speak('Switching to laser'); },150);
+  }
   drawHUD();
 
   // Muzzle flash
@@ -1219,7 +1217,7 @@ function updateEnemies(dt){
     }
     if(dist>10) updateEnemyAI(e,ud,toP,dist,dt);
     ud.shootTimer-=dt;
-    if(ud.shootTimer<=0&&dist<70){
+    if(ud.shootTimer<=0&&dist<70&&eBolts.length<7){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
       const d=new THREE.Vector3().subVectors(_camWP,e.position).normalize().add(jitter).normalize();
       spawnBolt(e.position.clone(),d,true,ud.boltSpeed,ud.boltDmg);
@@ -1337,9 +1335,14 @@ function updatePlayer(dt){
       if(Math.abs(ax[2])>.15)moveX=ax[2];
       if(Math.abs(ax[3])>.15)moveZ=ax[3];
       leftGripHeld=gp.buttons[1]?.pressed??false;
-      // X button (left controller, index 4): activate energy shield
+      // X button (left controller, index 4): cycle weapons in order 1-10
       const xNow=gp.buttons[4]?.pressed??false;
-      if(xNow&&!xWasPressed)activateShield();
+      if(xNow&&!xWasPressed){
+        currentWeaponIndex=(currentWeaponIndex+1)%WEAPONS_ORDER.length;
+        const nextType=WEAPONS_ORDER[currentWeaponIndex];
+        equipWeapon(nextType);
+        speak(WEAPONS[nextType].name);
+      }
       xWasPressed=xNow;
     }
 
@@ -2087,6 +2090,7 @@ function buildWeaponGeometry(type, parent){
 // ── Equip weapon: swap geometry on rightGrip weaponGroup ─────────
 function equipWeapon(type){
   currentWeapon=type;
+  currentWeaponIndex=WEAPONS_ORDER.indexOf(type); // keep X-cycle in sync
   const def=WEAPONS[type];
   if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
   // Partial refill on pickup if already owned
@@ -2116,6 +2120,9 @@ function equipWeapon(type){
 
 // ── Pickup spawn & management ─────────────────────────────────────
 const PICKUP_TYPES=['shotgun','grenade','saber','scatter','rail','rocket','dual','flame','cannon'];
+// Ordered weapon list for X-button cycling (laser is index 0)
+const WEAPONS_ORDER=['laser','shotgun','grenade','saber','scatter','rail','rocket','dual','flame','cannon'];
+let currentWeaponIndex=0;
 
 function buildPickupMesh(type){
   const g=new THREE.Group();
@@ -2810,6 +2817,11 @@ function updateShockwaves(dt){
 
 // ── Update charge each frame — auto-fire at CHARGE_MAX s ─────────
 function updateCharge(dt){
+  // Keep charge FX group positioned at the current weapon's tip every frame
+  if(chargeFXGroup&&rightGrip){
+    const tip=getWeaponTipOffset();
+    chargeFXGroup.position.copy(tip);
+  }
   // Flamethrower: triggerHeld drives continuous fire, no charge mechanic
   if(currentWeapon==='flame'){
     if(chargeSphere) chargeSphere.material.opacity=0;
