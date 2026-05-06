@@ -2473,19 +2473,31 @@ function spawnSlashWave(origin, dir){
 function updateSlashDetection(dt){
   if(currentWeapon!=='saber'||!rightGrip||!gameActive){gripPosInitialised=false;return;}
   slashCooldown=Math.max(0,slashCooldown-dt);
-  rightGrip.getWorldPosition(_currGripPos);
+
+  // Convert grip world position into dolly-local space.
+  // This cancels out thumbstick locomotion so only genuine physical
+  // wrist/arm movement contributes to the velocity measurement.
+  const gripWorld=new THREE.Vector3();
+  rightGrip.getWorldPosition(gripWorld);
+  const gripLocal=dolly.worldToLocal(gripWorld.clone());
+
+  _currGripPos.copy(gripLocal);
   if(!gripPosInitialised){_prevGripPos.copy(_currGripPos);gripPosInitialised=true;return;}
+
   const vx=(_currGripPos.x-_prevGripPos.x)/dt;
   const vy=(_currGripPos.y-_prevGripPos.y)/dt;
   const vz=(_currGripPos.z-_prevGripPos.z)/dt;
   const speed=Math.sqrt(vx*vx+vy*vy+vz*vz);
+
   if(speed>SLASH_SPEED_THRESHOLD&&slashCooldown<=0){
     slashCooldown=SLASH_COOLDOWN;
-    const swingDir=new THREE.Vector3(vx,vy,vz).normalize();
+    // Convert the local velocity direction back to world space for the projectile
+    const localDir=new THREE.Vector3(vx,vy,vz).normalize();
+    const worldDir=localDir.applyQuaternion(dolly.quaternion);
     const origin=new THREE.Vector3();
     if(saberTip) saberTip.getWorldPosition(origin);
     else rightGrip.getWorldPosition(origin);
-    spawnSlashWave(origin, swingDir);
+    spawnSlashWave(origin, worldDir);
     playSwingSound();
     haptic('right',0.7,35);
     spawnSaberTrail();
@@ -2504,7 +2516,7 @@ function updateSlashWaves(dt){
     const s=1+sw.age*.6; sw.grp.scale.setScalar(s);
     for(const e of enemies){
       if(sw.grp.position.distanceTo(e.position)<1.8+sw.age*.3){
-        e.userData.hp-=25;
+        e.userData.hp=0; // 100% — instant kill
         triggerKillFlash(0x44ffff);
       }
     }
@@ -2520,7 +2532,12 @@ function updateProjectiles(dt){
     g.age+=dt; g.vel.y-=9.8*dt;
     g.mesh.position.addScaledVector(g.vel,dt);
     g.mesh.rotation.x+=dt*8;
-    if(g.mesh.position.y<=getH(g.mesh.position.x,g.mesh.position.z)||g.age>5){
+    // Mid-flight enemy collision — detonate immediately on direct hit
+    let hitEnemy=false;
+    for(const e of enemies){
+      if(g.mesh.position.distanceTo(e.position)<2.2){hitEnemy=true;break;}
+    }
+    if(hitEnemy||g.mesh.position.y<=getH(g.mesh.position.x,g.mesh.position.z)||g.age>5){
       const pos=g.mesh.position.clone();
       for(const e of enemies){if(e.position.distanceTo(pos)<12)e.userData.hp-=18;}
       killExplosion(pos); playExplosionSound(pos); spawnCrater(pos);
