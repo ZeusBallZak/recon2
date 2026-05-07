@@ -196,36 +196,26 @@ function n2(x,y){
 function fbm(x,y){let v=0,a=.5,sx=0,sy=100;for(let i=0;i<6;i++){v+=a*n2(x+sx,y+sy);x*=2;y*=2;sx+=31.7;sy+=17.3;a*=.5;}return v;}
 function getH(x,z){return fbm(x*.05,z*.05)*8+fbm(x*.2,z*.2)*2;}
 
-// ── Terrain height matching the GPU exactly ───────────────────────────────
-// PlaneGeometry(700,700,100,100) has vertices every 7 units in XZ.
-// The GPU renders by linearly interpolating between those vertex heights.
-// On concave terrain, getH() sampled between vertices returns a value
-// LOWER than the interpolated mesh surface — causing camera clipping.
-// Fix: bilinearly interpolate between the 4 surrounding mesh vertices,
-// exactly replicating what the vertex shader produces.
-// A 0.3-unit floor buffer ensures the camera (XR adds ~1.7 m head height
-// on top of dolly.y) sits at least 2 m above the visible terrain surface.
-const TERRAIN_GRID = 10.0;         // vertex spacing (700 / 70 segments)
-const TERRAIN_FLOOR_BUFFER = 0.3;  // dolly offset → camera ≈ terrain + 2 m
+// ════════════════════════════════════════════════════════════════
+//  PLANET CONSTANTS  — Io as a small walkable sphere
+// ════════════════════════════════════════════════════════════════
+const PLANET_R = 280;          // base sphere radius (world units)
+const PLANET_FLOOR_BUFFER = 0.3;  // dolly sits just above mesh surface
 
-function getTerrainMeshHeight(x, z) {
-  // Snap to surrounding vertex grid
-  const gx = Math.floor(x / TERRAIN_GRID) * TERRAIN_GRID;
-  const gz = Math.floor(z / TERRAIN_GRID) * TERRAIN_GRID;
-  const fx = (x - gx) / TERRAIN_GRID;   // 0..1 fractional position
-  const fz = (z - gz) / TERRAIN_GRID;
-  // Bilinear interpolation of the 4 surrounding vertex heights
-  const h00 = getH(gx,          gz);
-  const h10 = getH(gx + TERRAIN_GRID, gz);
-  const h01 = getH(gx,          gz + TERRAIN_GRID);
-  const h11 = getH(gx + TERRAIN_GRID, gz + TERRAIN_GRID);
-  return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
+// Returns the radial distance from planet centre to the terrain surface
+// at the given normalised direction.  Reuses the same JS fbm() that
+// drives the CPU vertex displacement in buildTerrain().
+function getPlanetHeight(n){
+  // n = THREE.Vector3 (or {x,y,z}) on the unit sphere
+  // Scale matches the fragment shader's  vPos.xz * .05  sampling.
+  return PLANET_R + getH(n.x * PLANET_R, n.z * PLANET_R) + PLANET_FLOOR_BUFFER;
 }
 
-function sampleGround(x, z) {
-  // Return the true mesh surface height + floor buffer so the camera
-  // never clips through the rendered terrain.
-  return getTerrainMeshHeight(x, z) + TERRAIN_FLOOR_BUFFER;
+// Legacy flat-terrain shim — kept so any stray callers don't crash.
+// Maps a 3-D world position back to its surface height.
+function sampleGround(x, y, z){
+  const len = Math.sqrt(x*x+y*y+z*z)||1;
+  return getPlanetHeight({x:x/len, y:y/len, z:z/len});
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -237,10 +227,10 @@ const ioV=`
 varying vec2 vUv;varying float vH;varying vec3 vN,vPos;
 void main(){
   vUv=uv;
-  vH=position.y;       // height already baked into vertex positions on CPU
+  vH=length(position)-280.0;
   vPos=position;
-  vN=normalMatrix*normal; // normals computed by geo.computeVertexNormals() on CPU
-  gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+  vN=normalMatrix*normal;
+  gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`; 
 
 const ioF=`
 uniform float uTime;
@@ -469,95 +459,110 @@ function buildJupiter(){
 function buildTerrain(){
   terrainU={uTime:{value:0}};
 
-  // ── CPU vertex displacement ──────────────────────────────────────────
-  // Displace all vertices using the same FBM as the old GLSL vertex shader.
-  // Doing this on the CPU means:
-  //  • The GPU renders exactly what the CPU geometry says (no shader-only displacement).
-  //  • Raycaster.intersectObject() hits the true rendered surface — not a flat plane.
-  //  • Player floor collision is 100% accurate with zero approximation error.
-  // The fragment shader (coloring) is unchanged — it still uses vH, vPos, vN.
-  const segs=70; // LOD: 9800 vs 20000 triangles (51% reduction), TERRAIN_GRID=10
-  const geo=new THREE.PlaneGeometry(700,700,segs,segs);
-  geo.rotateX(-Math.PI/2);  // lay flat in XZ plane
-
-  // After rotateX, getX(i)/getZ(i) are the world XZ coords of each vertex
+  // ── Spherical planet geometry ──────────────────────────────────
+  // SphereGeometry(PLANET_R, 80, 60) — 80 longitude × 60 latitude segments.
+  // Each vertex is displaced RADIALLY outward by the same FBM as getH(),
+  // so CPU collision and GPU shading always match.
+  const geo=new THREE.SphereGeometry(PLANET_R, 80, 60);
   const pos=geo.attributes.position;
   for(let i=0;i<pos.count;i++){
-    const x=pos.getX(i), z=pos.getZ(i);
-    pos.setY(i, getH(x,z));  // getH mirrors the GLSL hAt() exactly
+    const px=pos.getX(i),py=pos.getY(i),pz=pos.getZ(i);
+    const len=Math.sqrt(px*px+py*py+pz*pz)||1;
+    const nx=px/len,ny=py/len,nz=pz/len;
+    const r=getPlanetHeight({x:nx,y:ny,z:nz});
+    pos.setXYZ(i,nx*r,ny*r,nz*r);
   }
   pos.needsUpdate=true;
-  geo.computeVertexNormals();  // smooth normals from actual triangle geometry
+  geo.computeVertexNormals();
 
   terrainMesh=new THREE.Mesh(geo,new THREE.ShaderMaterial({
     uniforms:terrainU,
     vertexShader:ioV,
-    fragmentShader:ioF
+    fragmentShader:ioF,
+    side:THREE.FrontSide
   }));
   scene.add(terrainMesh);
 }
 
 function buildRocks(){
-  // ── LOD levels per rock ──────────────────────────────────────────
-  // LOD0 (< 30 u): deformed IcosahedronGeometry  — ~40 triangles
-  // LOD1 (30–70 u): BoxGeometry                  — 12 triangles
-  // LOD2 (> 70 u):  invisible (sub-pixel at range)
   const rc=[0xc8a020,0xd46010,0x904010,0x504030,0xe0c060,0x806040,0x302010];
   for(let i=0;i<40;i++){
-    const x=(Math.random()-.5)*500, z=(Math.random()-.5)*500;
-    const h=getH(x,z), sz=.4+Math.random()**2*5;
+    // Uniform random point on sphere surface (upper hemisphere + sides)
+    const theta=Math.random()*Math.PI*2;
+    const phi=Math.acos(1-Math.random()*1.8); // bias toward north hemisphere
+    const nx=Math.sin(phi)*Math.cos(theta), ny=Math.cos(phi), nz=Math.sin(phi)*Math.sin(theta);
     const col=rc[Math.floor(Math.random()*rc.length)];
     const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85,metalness:.05});
+    const sz=.4+Math.random()**2*5;
 
-    // LOD 0 — deformed icosahedron (full detail)
     const geo0=new THREE.IcosahedronGeometry(sz,0), pa=geo0.attributes.position;
     for(let v=0;v<pa.count;v++)pa.setXYZ(v,pa.getX(v)*(.65+Math.random()*.7),pa.getY(v)*(.65+Math.random()*.7),pa.getZ(v)*(.65+Math.random()*.7));
     geo0.computeVertexNormals();
     const m0=new THREE.Mesh(geo0,mat);
-
-    // LOD 1 — plain box (12 triangles)
     const m1=new THREE.Mesh(new THREE.BoxGeometry(sz*1.1,sz*.9,sz*1.05),mat.clone());
     m1.visible=false;
 
     const grp=new THREE.Group();
     grp.add(m0,m1);
-    grp.position.set(x,h+sz*.5,z);
-    grp.rotation.set(Math.random()*6,Math.random()*6,Math.random()*6);
+    // Place on sphere surface
+    const surfR=getPlanetHeight({x:nx,y:ny,z:nz});
+    const surfNorm=new THREE.Vector3(nx,ny,nz);
+    grp.position.copy(surfNorm).multiplyScalar(surfR+sz*.5);
+    // Orient so rock "up" aligns with surface normal, plus random tilt
+    const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),surfNorm);
+    grp.quaternion.copy(q);
+    grp.rotateX((Math.random()-.5)*1.2);
+    grp.rotateZ((Math.random()-.5)*1.2);
     scene.add(grp);
     rockGroups.push({grp,meshes:[m0,m1],lastLOD:-1});
   }
 }
 
 function buildVolcanoes(){
-  // ── LOD levels per volcano ───────────────────────────────────────
-  // LOD0 (< 100 u): ConeGeometry(r,h, 20 sides, 4 rows) — ~320 tris
-  // LOD1 (100–200u): ConeGeometry(r,h, 10 sides, 2 rows) — ~80  tris
-  // LOD2 (> 200 u):  ConeGeometry(r,h,  6 sides, 1 row)  — ~24  tris
   const volcMat=new THREE.MeshStandardMaterial({color:0x201008,roughness:.95});
-  [{x:-340,z:-120,h:70,r:55},{x:160,z:80,h:40,r:32},{x:-200,z:200,h:55,r:42}].forEach(v=>{
-    const base=getH(v.x,v.z);
-    const cy=base+v.h/2;
+  // Volcano directions on the sphere (normalised), with cone params
+  const vDefs=[
+    {dir:new THREE.Vector3(-0.55, 0.78, -0.30).normalize(), h:70, r:55},
+    {dir:new THREE.Vector3( 0.42, 0.86,  0.28).normalize(), h:40, r:32},
+    {dir:new THREE.Vector3(-0.35, 0.72,  0.59).normalize(), h:55, r:42},
+  ];
+  const volcMat2=volcMat.clone();
+  vDefs.forEach(v=>{
+    const baseR=getPlanetHeight(v.dir);
+    const basePos=v.dir.clone().multiplyScalar(baseR);
+    const coneAxis=v.dir.clone(); // cone axis = radially outward
+    const cy=basePos.clone().addScaledVector(coneAxis,v.h/2);
 
-    // Build LOD0 with vertex jitter (existing look)
+    // Orient cone so its axis aligns with surface normal
+    const qCone=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),coneAxis);
+
+    // LOD0 — full detail with vertex jitter
     const geo0=new THREE.ConeGeometry(v.r,v.h,20,4,true),pa=geo0.attributes.position;
     for(let i=0;i<pa.count;i++){pa.setX(i,pa.getX(i)+(Math.random()-.5)*4);pa.setZ(i,pa.getZ(i)+(Math.random()-.5)*4);}
     geo0.computeVertexNormals();
-    const m0=new THREE.Mesh(geo0,volcMat.clone());m0.position.set(v.x,cy,v.z);scene.add(m0);
+    const m0=new THREE.Mesh(geo0,volcMat.clone()); m0.position.copy(cy); m0.quaternion.copy(qCone); scene.add(m0);
 
-    // LOD1 — 10-sided, 2 rings
+    // LOD1
     const m1=new THREE.Mesh(new THREE.ConeGeometry(v.r,v.h,10,2,true),volcMat.clone());
-    m1.position.set(v.x,cy,v.z);m1.visible=false;scene.add(m1);
+    m1.position.copy(cy); m1.quaternion.copy(qCone); m1.visible=false; scene.add(m1);
 
-    // LOD2 — 6-sided, 1 ring
+    // LOD2
     const m2=new THREE.Mesh(new THREE.ConeGeometry(v.r,v.h,6,1,true),volcMat.clone());
-    m2.position.set(v.x,cy,v.z);m2.visible=false;scene.add(m2);
+    m2.position.copy(cy); m2.quaternion.copy(qCone); m2.visible=false; scene.add(m2);
 
     volcanoLODs.push({meshes:[m0,m1,m2],lastLOD:-1});
 
-    const ll=new THREE.PointLight(0xff5500,6+Math.random()*4,70+v.r);ll.position.set(v.x,base+v.h+2,v.z);scene.add(ll);
+    const plumeTop=basePos.clone().addScaledVector(coneAxis,v.h);
+    const ll=new THREE.PointLight(0xff5500,6+Math.random()*4,70+v.r);
+    ll.position.copy(plumeTop); scene.add(ll);
     lavaLights.push({light:ll,phase:Math.random()*Math.PI*2,base:6+Math.random()*4});
-    buildPlume(v.x,base+v.h,v.z);
-    volcanoColliders.push({cx:v.x, cz:v.z, r:v.r, h:v.h, baseY:base});
+    buildPlume(plumeTop.x,plumeTop.y,plumeTop.z);
+
+    // Collider stored in world space — used by cone collision below
+    volcanoColliders.push({
+      basePos:basePos.clone(), axis:coneAxis.clone(),
+      r:v.r, h:v.h, baseR
+    });
   });
 }
 
@@ -993,7 +998,7 @@ function startGame(){
   gripPosInitialised=false;
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
   setTimeout(spawnInitialPickups, 1200);
-  dolly.position.set(0, getTerrainMeshHeight(0,0), 0);
+  dolly.position.set(0, getPlanetHeight({x:0,y:1,z:0}), 0); dolly.quaternion.identity();
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
   setTimeout(()=>showWaveBanner(1), 800);  // slight delay so VR has settled
   drawHUD();
@@ -1145,24 +1150,25 @@ function pickEnemyType(){
 }
 
 function spawnEnemy(){
-  const px=dolly.position.x,pz=dolly.position.z;
+  // Spawn on the sphere surface, distributed around the player's position
+  const playerDir=dolly.position.clone().normalize();
+  const fwdWorld=new THREE.Vector3(0,0,-1).applyQuaternion(dolly.quaternion); // dolly forward
 
-  // Only spawn within the player's forward hemisphere (dot product > 0).
-  // Get camera forward on the XZ plane and keep re-rolling the angle until
-  // the candidate position is in front of the player (within ~180° FOV).
-  // Cap retries at 12 so we never stall if the camera points at a wall.
-  const fwd=new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
-  let x,z,attempts=0;
+  // Try to find a spawn direction in player's forward hemisphere on the sphere
+  let spawnDir, attempts=0;
   do {
-    const a=Math.random()*Math.PI*2, d=35+Math.random()*55;
-    x=px+Math.cos(a)*d; z=pz+Math.sin(a)*d;
-    const dx=x-px, dz=z-pz;
-    const len=Math.sqrt(dx*dx+dz*dz);
-    // dot > 0.1 keeps spawns within ~84° either side of the look direction
-    if(fwd.x*dx/len + fwd.z*dz/len > 0.1) break;
-  } while(++attempts < 12);
+    const a=Math.random()*Math.PI*2, angDist=(35+Math.random()*55)/PLANET_R;
+    // Rotate playerDir by angDist around a random tangent axis
+    const tangent=new THREE.Vector3(-playerDir.z,0,playerDir.x).normalize();
+    const axisQ=new THREE.Quaternion().setFromAxisAngle(playerDir,a);
+    const rotAxis=tangent.clone().applyQuaternion(axisQ);
+    const distQ=new THREE.Quaternion().setFromAxisAngle(rotAxis,angDist);
+    spawnDir=playerDir.clone().applyQuaternion(distQ).normalize();
+    // Check it's in front of player (dot with fwd > 0.1)
+    if(fwdWorld.dot(spawnDir)>0.1) break;
+  } while(++attempts<12);
+  if(!spawnDir) spawnDir=playerDir.clone().applyAxisAngle(new THREE.Vector3(0,1,0).applyQuaternion(dolly.quaternion),1.0).normalize();
 
-  const h=getH(x,z);
   const type=pickEnemyType();
   const T=ENEMY_TYPES[type];
   const g=new THREE.Group();
@@ -1188,7 +1194,8 @@ function spawnEnemy(){
   }
 
   const hoverH=type==='heavy'?2.5:3.5;
-  g.position.set(x,h+hoverH,z);
+  const surfR=getPlanetHeight(spawnDir);
+  g.position.copy(spawnDir).multiplyScalar(surfR+hoverH);
 
   // ── LOD body meshes ─────────────────────────────────────────────
   // LOD0 = existing `body` (8-face deformed octahedron, already added)
@@ -1227,9 +1234,20 @@ function updateEnemies(dt){
   for(const e of enemies){
     const ud=e.userData;if(ud.isDying){dead.push(e);continue;}
     ud.hoverPhase+=dt*2.2;
-    e.position.y=getH(e.position.x,e.position.z)+ud.hoverH+Math.sin(ud.hoverPhase)*.6;
+    const eDir=e.position.clone().normalize();
+    const eTerrR=getPlanetHeight(eDir);
+    e.position.setLength(eTerrR+ud.hoverH+Math.sin(ud.hoverPhase)*.6);
     const toP=_toP.subVectors(_camWP,e.position),dist=toP.length();
-    e.rotation.y=Math.atan2(toP.x,toP.z);
+    // Face toward player: compute the tangential component of toP
+    const eUp=e.position.clone().normalize();
+    const towardPlayer=toP.clone().normalize();
+    // Rotate enemy group so its local -Z points toward the player
+    const targetQ=new THREE.Quaternion();
+    const lookTarget=e.position.clone().add(towardPlayer.multiplyScalar(5));
+    // Build a look-at quaternion with surface normal as up
+    const lookMat=new THREE.Matrix4().lookAt(e.position,lookTarget,eUp);
+    targetQ.setFromRotationMatrix(lookMat);
+    e.quaternion.slerp(targetQ,0.08);
 
     // ── LOD switching — only triggers on level change ──────────────
     const newLOD=dist<25?0:dist<60?1:dist<120?2:3;
@@ -1324,7 +1342,7 @@ function updateBolts(dt){
       p.position.addScaledVector(p.userData.vel,dt);
       p.userData.age+=dt;
       for(const u of p.userData.unis)u.uTime.value+=dt;
-      if(p.userData.age>3.5||p.position.y<getH(p.position.x,p.position.z)){rem.push(p);continue;}
+      if(p.userData.age>3.5||p.position.length()<getPlanetHeight(p.position.clone().normalize())){rem.push(p);continue;}
       if(!isPlayer)updateBoltBuzz(p);  // move panner + apply Doppler shift every frame
       if(isPlayer){
         let hit=false;
@@ -1386,7 +1404,7 @@ function updatePlayer(dt){
       // A button (index 4): super jump
       const aNow=gp.buttons[4]?.pressed??false;
       if(aNow&&!aWasPressed&&isGrounded){
-        playerVY=JUMP_VEL;
+        playerVY=JUMP_VEL; // radial launch velocity (away from planet centre)
         isGrounded=false;
         haptic('right',1.0,120);haptic('left',0.8,100);
         drawHUD();
@@ -1397,10 +1415,11 @@ function updatePlayer(dt){
       // Dash stops early if an enemy is within DASH_STOP_R metres ahead.
       const bNow=gp.buttons[5]?.pressed??false;
       if(bNow&&!bWasPressed&&!dashActive&&dashCooldown<=0&&gameActive){
-        // Capture camera forward projected onto XZ at press time
+        // Dash in camera-forward direction, projected onto sphere tangent plane
+        const sN=dolly.position.clone().normalize();
         camera.getWorldDirection(_dashDir);
-        _dashDir.y=0;
-        if(_dashDir.lengthSq()<.0001)_dashDir.set(0,0,-1);
+        _dashDir.addScaledVector(sN,-_dashDir.dot(sN));
+        if(_dashDir.lengthSq()<.0001)_dashDir.copy(_fwd);
         _dashDir.normalize();
         dashActive=true;
         dashRemaining=DASH_DUR;
@@ -1413,105 +1432,85 @@ function updatePlayer(dt){
   }
   if(snapCooldown>0)snapCooldown-=dt;
 
-  // Head-directed locomotion — project camera look onto XZ plane
-  camera.getWorldDirection(_fwd);_fwd.y=0;
-  if(_fwd.lengthSq()<.0001)_fwd.set(0,0,-1);_fwd.normalize();
-  _rgt.crossVectors(_fwd,new THREE.Vector3(0,1,0)).normalize();
+  // ── Dolly orientation — align +Y with surface normal ─────────────
+  {
+    const sN=dolly.position.clone().normalize();
+    const dU=new THREE.Vector3(0,1,0).applyQuaternion(dolly.quaternion);
+    const ang=dU.angleTo(sN);
+    if(ang>0.0015){
+      const ax=dU.clone().cross(sN);
+      if(ax.lengthSq()>1e-6){
+        const step=Math.min(ang,4.5*dt);
+        dolly.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(ax.normalize(),step));
+      }
+    }
+  }
 
-  const spd=leftGripHeld?SPRINT:SPEED;
+  // ── Tangential locomotion ─────────────────────────────────────────
+  const surfNormLoco=dolly.position.clone().normalize();
+  camera.getWorldDirection(_fwd);
+  _fwd.addScaledVector(surfNormLoco,-_fwd.dot(surfNormLoco));
+  if(_fwd.lengthSq()<.0001)_fwd.set(0,0,-1);_fwd.normalize();
+  _rgt.crossVectors(_fwd,surfNormLoco).normalize();
+  const spd=leftGripHeld?SPRINT_VAL:SPEED;
   dolly.position.addScaledVector(_fwd,-moveZ*spd*dt);
   dolly.position.addScaledVector(_rgt, moveX*spd*dt);
   updateFootsteps(dt,moveX,moveZ);
-  // ── Dash tick ───────────────────────────────────────────────────
+
+  // ── Dash (tangential) ────────────────────────────────────────────
   dashCooldown=Math.max(0,dashCooldown-dt);
   if(dashActive){
     const step=Math.min(dashRemaining,dt)*DASH_SPEED;
     dolly.position.addScaledVector(_dashDir,step);
     dashRemaining-=dt;
-
-    // Each frame, check every enemy within 2–3 m of the player.
-    // Hit enemies are: knocked back 5 m away from the player and
-    // dealt 20% of their max HP as damage. Each enemy can only be
-    // struck once per dash (tracked in ud.dashHit).
     const dPos=dolly.position;
     for(const e of enemies){
-      const ud=e.userData;
-      if(ud.dashHit)continue; // already struck this dash
+      const ud=e.userData;if(ud.dashHit)continue;
       const toE=new THREE.Vector3().subVectors(e.position,dPos);
-      const dist=toE.length();
-      if(dist<3.0){
-        ud.dashHit=true;
-        // 20% max HP damage
-        ud.hp-=Math.ceil(ud.maxHp*.20);
-        // Push back 5 m directly away from the player
+      if(toE.length()<3.0){
+        ud.dashHit=true; ud.hp-=Math.ceil(ud.maxHp*.20);
         const pushDir=toE.lengthSq()>.001?toE.normalize():_dashDir.clone();
         e.position.addScaledVector(pushDir,5);
-        // Clamp pushed enemy to terrain height
-        e.position.y=getH(e.position.x,e.position.z)+ud.hoverH;
-        // Brief visual flash on hit
-        if(ud.body){
-          ud.body.material.emissive.setHex(0xffffff);
-          setTimeout(()=>{if(ud.body)ud.body.material.emissive.setHex(ud.body.material.emissive.getHex()&&0x440800);},120);
-        }
+        const eD=e.position.clone().normalize();
+        e.position.setLength(Math.max(getPlanetHeight(eD),e.position.length()));
         haptic('right',1.0,60);
       }
     }
-
     if(dashRemaining<=0){
       dashActive=false;dashRemaining=0;
-      // Clear dashHit flags so enemies can be hit on next dash
-      enemies.forEach(e=>{ e.userData.dashHit=false; });
+      enemies.forEach(e=>{e.userData.dashHit=false;});
       haptic('right',0.5,60);
     }
   }
 
-  dolly.position.x=Math.max(-320,Math.min(320,dolly.position.x));
-  dolly.position.z=Math.max(-320,Math.min(320,dolly.position.z));
-
-  // ── Volcano collision ────────────────────────────────────────────────
-  // Each volcano is a cone. At the player's current height above the base,
-  // the cone radius = r_base × (1 − height_above_base / cone_height).
-  // If the player's XZ is inside that radius we push them radially outward.
-  const PLAYER_R=1.2; // player capsule radius in world units
+  // ── Volcano collision (3-D) ───────────────────────────────────────
+  const PLAYER_R=1.2;
   for(const vc of volcanoColliders){
-    const dx=dolly.position.x-vc.cx, dz=dolly.position.z-vc.cz;
-    const dist2d=Math.sqrt(dx*dx+dz*dz);
-    const heightAboveBase=Math.max(0, dolly.position.y-vc.baseY);
-    const coneR=vc.r*Math.max(0, 1-(heightAboveBase/vc.h));
-    const minDist=coneR+PLAYER_R;
-    if(dist2d<minDist&&dist2d>0.001){
-      // Push player out to the cone surface along the XZ direction
-      const nx=dx/dist2d, nz=dz/dist2d;
-      dolly.position.x=vc.cx+nx*minDist;
-      dolly.position.z=vc.cz+nz*minDist;
-    }
+    const toPlayer=new THREE.Vector3().subVectors(dolly.position,vc.basePos);
+    const dist3d=toPlayer.length();
+    if(dist3d<vc.r+PLAYER_R&&dist3d>0.001)
+      dolly.position.copy(vc.basePos).addScaledVector(toPlayer.normalize(),vc.r+PLAYER_R);
   }
 
-  // ── Floor collision via raycaster ───────────────────────────────────
-  // Terrain vertices are now displaced on the CPU (not the GPU shader),
-  // so intersectObject() hits the exact rendered surface every time.
-  // Ray fires straight down from 60 units above dolly — always above terrain.
-  floorRay.set(
-    new THREE.Vector3(dolly.position.x, dolly.position.y+60, dolly.position.z),
-    new THREE.Vector3(0,-1,0)
-  );
+  // ── Spherical gravity + terrain following ─────────────────────────
+  const surfDirP=dolly.position.clone().normalize();
+  floorRay.set(surfDirP.clone().multiplyScalar(PLANET_R*2), surfDirP.clone().negate());
   const hits=floorRay.intersectObject(terrainMesh,false);
-  if(hits.length>0){
-    const groundY=hits[0].point.y;  // exact surface Y from real mesh triangles
-    if(!isGrounded){
-      playerVY-=IO_GRAVITY*dt;
-      dolly.position.y+=playerVY*dt;
-      if(dolly.position.y<=groundY){
-        dolly.position.y=groundY;
-        playerVY=0;isGrounded=true;
-        haptic('right',0.6,80);haptic('left',0.5,70);
-        spawnLandingDust(new THREE.Vector3(dolly.position.x,groundY,dolly.position.z));
-        drawHUD();
-      }
+  const groundR=hits.length>0 ? hits[0].point.length() : getPlanetHeight(surfDirP);
+
+  if(!isGrounded){
+    playerVY-=IO_GRAVITY*dt;
+    const newR=dolly.position.length()+playerVY*dt;
+    if(newR<=groundR){
+      dolly.position.setLength(groundR);
+      playerVY=0;isGrounded=true;
+      haptic('right',0.6,80);haptic('left',0.5,70);
+      spawnLandingDust(dolly.position.clone());drawHUD();
     }else{
-      // Smooth follow — lerp snaps up slopes without jarring jumps
-      dolly.position.y=THREE.MathUtils.lerp(dolly.position.y,groundY,Math.min(1,dt*20));
+      dolly.position.setLength(Math.max(newR,groundR));
     }
+  }else{
+    dolly.position.setLength(THREE.MathUtils.lerp(dolly.position.length(),groundR,Math.min(1,dt*18)));
   }
 
   // Shield passive regen
@@ -1841,20 +1840,22 @@ function playEnemyShot(worldPos){
 //  Starts after AudioContext is created (on VR entry).
 // ════════════════════════════════════════════════════════════════
 const VOLCANO_POSITIONS=[
-  {x:-340,z:-120,h:70},{x:160,z:80,h:40},{x:-200,z:200,h:55}
+  {dir:new THREE.Vector3(-0.55,0.78,-0.30).normalize(),h:70},
+  {dir:new THREE.Vector3( 0.42,0.86, 0.28).normalize(),h:40},
+  {dir:new THREE.Vector3(-0.35,0.72, 0.59).normalize(),h:55},
 ];
-let volcanoNodes=[];  // so we can stop them on audio suspend
+let volcanoNodes=[];
 
 function startVolcanoAmbience(){
   const ctx=getAudio();if(!ctx)return;
-  if(volcanoNodes.length)return; // already running
-
+  if(volcanoNodes.length)return;
   VOLCANO_POSITIONS.forEach(v=>{
-    const worldY=getH(v.x,v.z)+v.h;
+    const surfR=getPlanetHeight(v.dir);
+    const plumePos=v.dir.clone().multiplyScalar(surfR+v.h);
     const pan=ctx.createPanner();
     pan.panningModel='HRTF'; pan.distanceModel='inverse';
     pan.refDistance=18; pan.maxDistance=300; pan.rolloffFactor=1.1;
-    setPannerPos(pan,{x:v.x,y:worldY,z:v.z});
+    setPannerPos(pan,plumePos);
     pan.connect(ctx.destination);
 
     // Sub-bass rumble oscillator
@@ -2207,14 +2208,16 @@ function buildPickupMesh(type){
 }
 
 function spawnPickup(type, x, z){
-  if(!terrainMesh) return;
-  floorRay.set(new THREE.Vector3(x,80,z),new THREE.Vector3(0,-1,0));
-  const hits=floorRay.intersectObject(terrainMesh,false);
-  const groundY=hits.length?hits[0].point.y:getH(x,z);
+  // x,z used as sphere surface angles (not flat coords)
+  const len=Math.sqrt(x*x+z*z)||1;
+  const nx=x/len*0.8, nz=z/len*0.8;
+  const ny=Math.sqrt(Math.max(0,1-nx*nx-nz*nz));
+  const n={x:nx,y:ny,z:nz};
+  const surfR=getPlanetHeight(n);
   const mesh=buildPickupMesh(type);
-  mesh.position.set(x, groundY+1.0, z); // 1 m above ground
+  mesh.position.set(nx*(surfR+1.0), ny*(surfR+1.0), nz*(surfR+1.0));
   scene.add(mesh);
-  pickups.push({type, mesh, age:0});
+  pickups.push({type,mesh,age:0});
 }
 
 function spawnInitialPickups(){
@@ -2545,7 +2548,10 @@ function updateProjectiles(dt){
   // Grenades — gravity arc, explode on terrain
   const gDone=[];
   for(const g of grenadeProjs){
-    g.age+=dt; g.vel.y-=9.8*dt;
+    g.age+=dt;
+    // Gravity toward planet center (radially inward)
+    const gDir=g.mesh.position.clone().normalize().negate();
+    g.vel.addScaledVector(gDir,9.8*dt);
     g.mesh.position.addScaledVector(g.vel,dt);
     g.mesh.rotation.x+=dt*8;
     // Mid-flight enemy collision — detonate immediately on direct hit
@@ -2553,7 +2559,7 @@ function updateProjectiles(dt){
     for(const e of enemies){
       if(g.mesh.position.distanceTo(e.position)<2.2){hitEnemy=true;break;}
     }
-    if(hitEnemy||g.mesh.position.y<=getH(g.mesh.position.x,g.mesh.position.z)||g.age>5){
+    if(hitEnemy||g.mesh.position.length()<=getPlanetHeight(g.mesh.position.clone().normalize())||g.age>5){
       const pos=g.mesh.position.clone();
       for(const e of enemies){if(e.position.distanceTo(pos)<12)e.userData.hp-=18;}
       killExplosion(pos); playExplosionSound(pos); spawnCrater(pos);
@@ -2582,7 +2588,7 @@ function updateProjectiles(dt){
         killExplosion(pos); playExplosionSound(pos); hit=true; break;
       }
     }
-    if(hit||r.grp.position.y<getH(r.grp.position.x,r.grp.position.z)||r.age>7){
+    if(hit||r.grp.position.length()<getPlanetHeight(r.grp.position.clone().normalize())||r.age>7){
       if(!hit)killExplosion(r.grp.position.clone());
       rDone.push(r);
     }
@@ -2606,7 +2612,7 @@ function updateProjectiles(dt){
         hit=true; break;
       }
     }
-    if(hit||c.mesh.position.y<getH(c.mesh.position.x,c.mesh.position.z)||c.age>8){
+    if(hit||c.mesh.position.length()<getPlanetHeight(c.mesh.position.clone().normalize())||c.age>8){
       if(!hit)killExplosion(c.mesh.position.clone());
       cDone.push(c);
     }
@@ -2623,10 +2629,10 @@ function updateProjectiles(dt){
 const _lodRef=new THREE.Vector3();
 
 function updateRockLODs(){
-  _lodRef.set(dolly.position.x, 0, dolly.position.z);
+  _lodRef.copy(dolly.position);
   for(const rk of rockGroups){
     const wp=rk.grp.position;
-    const dist=Math.sqrt((wp.x-_lodRef.x)**2+(wp.z-_lodRef.z)**2);
+    const dist=_lodRef.distanceTo(wp);
     const lod=dist<30?0:dist<70?1:2;
     if(lod===rk.lastLOD)continue;
     rk.lastLOD=lod;
@@ -2639,10 +2645,10 @@ function updateRockLODs(){
 }
 
 function updateVolcanoLODs(){
-  _lodRef.set(dolly.position.x, 0, dolly.position.z);
+  _lodRef.set(dolly.position.x, dolly.position.y, dolly.position.z);
   for(const vl of volcanoLODs){
     const wp=vl.meshes[0].position;
-    const dist=Math.sqrt((wp.x-_lodRef.x)**2+(wp.z-_lodRef.z)**2);
+    const dist=_lodRef.distanceTo(wp);
     const lod=dist<100?0:dist<200?1:2;
     if(lod===vl.lastLOD)continue;
     vl.lastLOD=lod;
@@ -3095,9 +3101,12 @@ function spawnCrater(pos){
   const geo=new THREE.RingGeometry(r*.35,r,16,1);
   const mat=new THREE.MeshBasicMaterial({color:0x110500,transparent:true,opacity:.75,depthWrite:false,side:THREE.DoubleSide});
   const mesh=new THREE.Mesh(geo,mat);
-  mesh.rotation.x=-Math.PI/2;
-  const groundY=getH(pos.x,pos.z)+.05;
-  mesh.position.set(pos.x,groundY,pos.z);
+  // Orient crater to lie on the sphere surface (rotate normal to face outward)
+  const surfNorm=pos.clone().normalize();
+  const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),surfNorm);
+  mesh.quaternion.copy(q);
+  const groundR=getPlanetHeight(surfNorm)+.05;
+  mesh.position.copy(surfNorm).multiplyScalar(groundR);
   scene.add(mesh);
   craters.push({mesh,age:0});
   if(craters.length>30){const old=craters.shift();scene.remove(old.mesh);}
@@ -3278,8 +3287,11 @@ function spawnBoss(){
   const eL=new THREE.PointLight(0xff2200,5,20);eL.position.copy(eye.position);g.add(eL);
   const lod1=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,6,5),body.material.clone());lod1.visible=false;g.add(lod1);
   const lod2=new THREE.Mesh(new THREE.SphereGeometry(1.1*scale,4,3),body.material.clone());lod2.visible=false;g.add(lod2);
-  const bh=getH(px-40,pz-40);
-  g.position.set(px-40,bh+8,pz-40);
+  // Spawn boss on the sphere surface, offset from player
+  const pDir=dolly.position.clone().normalize();
+  const bossDir=new THREE.Vector3(pDir.x-0.3,pDir.y-0.1,pDir.z-0.3).normalize();
+  const bh=getPlanetHeight(bossDir);
+  g.position.copy(bossDir).multiplyScalar(bh+8);
   g.userData={type:'boss',hp:50,maxHp:50,speed:2.5,shootTimer:.8,shootDelay:.8,shootRand:.5,
     boltSpeed:18,boltDmg:20,hoverPhase:0,hoverH:8,eye,eL,body,isDying:false,
     lodBodies:[body,lod1,lod2],lastLOD:-1,baseLightInt:5,chargeCool:0,charging:false,chargeTimer:0};
