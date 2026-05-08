@@ -117,8 +117,7 @@ const SHIELD_DUR=3.0, SHIELD_RECHARGE=10.0;
 // ── Weapon degradation ───────────────────────────────────────────
 let weaponCondition={}; // type → 0..100
 // ── Day/night cycle ──────────────────────────────────────────────
-let sunLight=null, ambientLight=null, dayNightAngle=0;
-const DAY_NIGHT_PERIOD=600; // seconds (10 minutes)
+let sunLight=null, ambientLight=null;
 // ── Spatial audio tracks ─────────────────────────────────────────
 let enemyHumNodes={};  // enemyId → {osc,gain,pan}
 let musicNodes=null;
@@ -405,10 +404,13 @@ function buildWorld(){
   buildTerrain();
   buildRocks();
   buildVolcanoes();
-  // Lighting
-  ambientLight=new THREE.AmbientLight(0x201510,0.8);scene.add(ambientLight);
-  sunLight=new THREE.DirectionalLight(0xffe8cc,1.4);sunLight.position.set(100,300,-200);scene.add(sunLight);
-  const jl=new THREE.DirectionalLight(0xcc6633,0.5);jl.position.set(-850,620,-1900);scene.add(jl);
+  // Lighting — fixed sun position matching Io's orbital relationship with Jupiter
+  ambientLight=new THREE.AmbientLight(0x201510,0.55);scene.add(ambientLight);
+  sunLight=new THREE.DirectionalLight(0xffe8cc,1.6);
+  // Sun sits high to the upper-right, casting long warm shadows across the terrain
+  sunLight.position.set(320, 480, -260).normalize().multiplyScalar(600);
+  scene.add(sunLight);
+  const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
 }
 
 function buildStarfield(){
@@ -569,9 +571,12 @@ function buildVolcanoes(){
     lavaLights.push({light:ll,phase:Math.random()*Math.PI*2,base:6+Math.random()*4});
     buildPlume(plumeTop.x,plumeTop.y,plumeTop.z);
 
-    // Collider stored in world space — used by cone collision below
+    // Collider — surfacePos is the terrain surface point at the volcano centre.
+    // We use this instead of basePos (which is underground) so the collision
+    // sphere is centred where the cone actually meets the terrain.
+    const surfacePos=coneAxis.clone().multiplyScalar(getPlanetHeight(coneAxis));
     volcanoColliders.push({
-      basePos:basePos.clone(), axis:coneAxis.clone(),
+      basePos:basePos.clone(), surfacePos, axis:coneAxis.clone(),
       r:v.r, h:v.h, baseR
     });
   });
@@ -1285,6 +1290,30 @@ function updateEnemies(dt){
     }
     if(ud.hp<=0){ud.isDying=true;dead.push(e);}
   }
+
+  // ── Separation pass — keep enemies spaced apart ───────────────
+  // O(n²) over ≤12 enemies: push any overlapping pair apart along
+  // their connecting vector, then re-snap each to the terrain surface.
+  const MIN_SEP=5.5; // minimum centre-to-centre world distance
+  for(let i=0;i<enemies.length;i++){
+    for(let j=i+1;j<enemies.length;j++){
+      const ei=enemies[i], ej=enemies[j];
+      const diff=new THREE.Vector3().subVectors(ei.position,ej.position);
+      const d=diff.length();
+      if(d>0.001&&d<MIN_SEP){
+        const push=(MIN_SEP-d)*0.5;
+        diff.normalize().multiplyScalar(push);
+        ei.position.add(diff);
+        ej.position.sub(diff);
+        // Re-snap both to terrain surface
+        const di=ei.position.clone().normalize();
+        const dj=ej.position.clone().normalize();
+        ei.position.setLength(getPlanetHeight(di)+ei.userData.hoverH);
+        ej.position.setLength(getPlanetHeight(dj)+ej.userData.hoverH);
+      }
+    }
+  }
+
   for(const e of dead){
     killExplosion(e.position.clone());scene.remove(e);
     playExplosionSound(e.position.clone());
@@ -1494,13 +1523,28 @@ function updatePlayer(dt){
     }
   }
 
-  // ── Volcano collision (3-D) ───────────────────────────────────────
+  // ── Volcano collision ─────────────────────────────────────────────
+  // Measure angular arc-distance between the player's surface position and
+  // each volcano's surface centre.  This is accurate on a sphere regardless
+  // of how deep the cone base is embedded in the terrain.
   const PLAYER_R=1.2;
+  const playerDir=dolly.position.clone().normalize();
   for(const vc of volcanoColliders){
-    const toPlayer=new THREE.Vector3().subVectors(dolly.position,vc.basePos);
-    const dist3d=toPlayer.length();
-    if(dist3d<vc.r+PLAYER_R&&dist3d>0.001)
-      dolly.position.copy(vc.basePos).addScaledVector(toPlayer.normalize(),vc.r+PLAYER_R);
+    // Arc-length distance along the sphere surface
+    const arcDist=playerDir.angleTo(vc.axis)*PLANET_R;
+    const minArc=vc.r*0.85+PLAYER_R; // slightly inside visual base radius
+    if(arcDist<minArc&&arcDist>0.001){
+      // Push player along the sphere surface directly away from the volcano axis
+      // 1. Find the great-circle direction away from vc.axis in the player's tangent plane
+      const awayWorld=new THREE.Vector3().subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis)));
+      if(awayWorld.lengthSq()<0.0001) continue; // exactly on top — skip
+      awayWorld.normalize();
+      // 2. Rotate playerDir by the angular shortfall along awayWorld
+      const shortfall=(minArc-arcDist)/PLANET_R; // radians to push
+      const pushQ=new THREE.Quaternion().setFromAxisAngle(awayWorld.clone().cross(playerDir).normalize(), shortfall);
+      const newDir=playerDir.clone().applyQuaternion(pushQ).normalize();
+      dolly.position.setLength(getPlanetHeight(newDir)).copy(newDir).multiplyScalar(getPlanetHeight(newDir));
+    }
   }
 
   // ── Spherical gravity + terrain following ─────────────────────────
@@ -3113,22 +3157,7 @@ function updateCombo(dt){
 // ════════════════════════════════════════════════════════════════
 //  DAY / NIGHT CYCLE  — sun orbits every 10 minutes
 // ════════════════════════════════════════════════════════════════
-function updateDayNight(dt){
-  if(!sunLight)return;
-  dayNightAngle+=dt*(Math.PI*2/DAY_NIGHT_PERIOD);
-  const t=dayNightAngle;
-  // Sun arcs from east (+X) over the south (-Z) to west (-X)
-  sunLight.position.set(Math.cos(t)*400, Math.sin(t)*350+50, -200);
-  const night=Math.max(0,-Math.sin(t)); // 0=day, 1=night
-  const day=Math.max(0,Math.sin(t));
-  sunLight.intensity=1.4*Math.max(0.05,day);
-  sunLight.color.setHSL(.1-.03*night, .7+.3*day, .9);
-  if(ambientLight){
-    const ambI=0.80*day+0.18*night;
-    ambientLight.intensity=ambI;
-    ambientLight.color.setHSL(.05+.5*night,.4,.5); // warm day → cool/purple night
-  }
-}
+function updateDayNight(){} // removed — fixed sun used instead
 
 // ════════════════════════════════════════════════════════════════
 //  IMPACT CRATERS  — flat scorched ring left by explosions
