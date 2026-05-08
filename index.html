@@ -231,11 +231,12 @@ void main(){
   vUv=uv;
   vH=length(position)-280.0;
   vPos=position;
-  vN=normalMatrix*normal;
+  vN=normal;
   gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`; 
 
 const ioF=`
 uniform float uTime;
+uniform vec3 uSunDir;
 varying vec2 vUv;varying float vH;varying vec3 vN,vPos;
 float hh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float nn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hh(i),hh(i+vec2(1,0)),f.x),mix(hh(i+vec2(0,1)),hh(i+vec2(1,1)),f.x),f.y);}
@@ -255,10 +256,12 @@ void main(){
   float crack=1.-smoothstep(0.,.07,abs(n3-.48));
   float lE=clamp(crack*(cal*1.5+.25),0.,1.);
   vec3 lCol=mix(lava,lC,smoothstep(.4,1.,lE));col=mix(col,lCol,lE);
-  vec3 N=normalize(vN),L=normalize(vec3(.35,.85,.25));
+  // World-space lighting: N = geometry normal (model-space = world-space for unrotated mesh)
+  // L = sun direction passed as uniform so it matches sunLight.position exactly.
+  // Half the planet faces away → diff drops to 0.20 (20% self-illumination floor).
+  vec3 N=normalize(vN),L=normalize(uSunDir);
   float diff=max(.20,dot(N,L));
-  float sp=pow(max(0.,dot(reflect(-L,N),vec3(0.,0.,-1.))),12.)*.06;
-  gl_FragColor=vec4(col*diff+sp+lCol*lE*.35,1.);}`;
+  gl_FragColor=vec4(col*diff+lCol*lE*.35,1.);}`;
 
 // ── Jupiter ─────────────────────────────────────────────────────
 const jupV=`varying vec2 vUv;varying vec3 vN;
@@ -481,7 +484,10 @@ function buildJupiter(){
 }
 
 function buildTerrain(){
-  terrainU={uTime:{value:0}};
+  // uSunDir is the world-space sun direction — must match sunLight.position exactly
+  // so the hemisphere shading aligns with the visible DirectionalLight shadow.
+  const sunDir=new THREE.Vector3(320,480,-260).normalize();
+  terrainU={uTime:{value:0}, uSunDir:{value:sunDir}};
 
   // ── Spherical planet geometry ──────────────────────────────────
   // SphereGeometry(PLANET_R, 80, 60) — 80 longitude × 60 latitude segments.
