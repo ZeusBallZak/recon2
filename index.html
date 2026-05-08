@@ -1497,9 +1497,15 @@ function updatePlayer(dt){
     }
 
     if(src.handedness==='right'){
-      // Right thumbstick X: snap turn 45°
+      // Right thumbstick X: snap turn 45° around the surface normal (planet local up)
       if(snapCooldown<=0&&Math.abs(ax[2])>.65){
-        dolly.rotation.y-=Math.sign(ax[2])*SENS_SNAP;
+        // On a spherical planet the dolly's local +Y IS the surface normal.
+        // Rotating around world Y would mis-turn when the dolly is tilted.
+        // We pre-multiply a quaternion that spins around the current surface normal.
+        const surfNorm=dolly.position.clone().normalize();
+        const snapQ=new THREE.Quaternion()
+          .setFromAxisAngle(surfNorm,-Math.sign(ax[2])*SENS_SNAP);
+        dolly.quaternion.premultiply(snapQ);
         snapCooldown=.38;
       }
       // A button (index 4): super jump
@@ -2165,7 +2171,7 @@ const WEAPONS={
   scatter:{name:'SCATTER BLSTR',  ammo:20,       rate:.80,  col:0xff44ff, pickupCol:0xcc22cc},
   rail:   {name:'RAIL SNIPER',    ammo:12,       rate:1.40, col:0x00ffff, pickupCol:0x00cccc},
   rocket: {name:'HOMING ROCKETS', ammo:8,        rate:1.80, col:0xff3300, pickupCol:0xff2200},
-  dual:   {name:'DUAL ION GUNS',  ammo:100,      rate:.08,  col:0xffcc00, pickupCol:0xffaa00},
+  dual:   {name:'DUAL ION GUNS',  ammo:100,      rate:.25,  col:0xffcc00, pickupCol:0xffaa00},
   flame:  {name:'FLAMETHROWER',   ammo:80,       rate:.12,  col:0xff8800, pickupCol:0xff6600},
   cannon: {name:'VOID CANNON',    ammo:5,        rate:3.00, col:0xffffff, pickupCol:0xaaaaff},
 };
@@ -2640,13 +2646,29 @@ function fireRocket(){
   rocketProjs.push({grp,vel:bDir.clone().multiplyScalar(16),age:0});
 }
 
+// Tracks which barrel fires next (alternates L/R for machine-gun stagger)
+let _dualBarrel=0;
 function fireDual(){
   const {mPos,bDir}=getBarrelData();
   const right=new THREE.Vector3(1,0,0).applyQuaternion(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
-  [-.06,.06].forEach(offset=>{
-    const p=mPos.clone().addScaledVector(right,offset);
-    spawnBolt(p,bDir,false,85,8);
-  });
+  const offset=(_dualBarrel%2===0?-.06:.06);
+  _dualBarrel++;
+  const p=mPos.clone().addScaledVector(right,offset);
+
+  // Billboard quad — gold/yellow to match the Dual Ion Gun colour
+  const col=0xffcc00;
+  const gMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:.8,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const gMesh=new THREE.Mesh(new THREE.PlaneGeometry(.14,.40),gMat);
+  const cMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.95,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const cMesh=new THREE.Mesh(new THREE.PlaneGeometry(.05,.16),cMat);
+  const grp=new THREE.Group();
+  grp.add(gMesh,cMesh);
+  grp.position.copy(p);
+  scene.add(grp);
+  // Reuse shotgunBolts billboard update (handles billboarding, fading, hits)
+  shotgunBolts.push({grp,gMat,cMat,dir:bDir.clone().normalize(),age:0,maxAge:.6,speed:90,dmg:10});
 }
 
 function fireFlame(){
