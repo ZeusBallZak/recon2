@@ -1314,6 +1314,39 @@ function updateEnemies(dt){
     }
   }
 
+  // ── Enemy volcano collision ──────────────────────────────────────────
+  for(const e of enemies){
+    const ePos=e.position; const eRad=ePos.length(); const eDir=ePos.clone().normalize();
+    for(const vc of volcanoColliders){
+      if(eDir.angleTo(vc.axis)*PLANET_R>vc.r+4) continue;
+      const htE=eRad-vc.baseR;
+      if(htE<20||htE>vc.h+4) continue;
+      // Volume escape
+      const toE=new THREE.Vector3().subVectors(ePos,vc.basePos);
+      const tE=Math.max(0,Math.min(vc.h,toE.dot(vc.axis)));
+      const rcE=vc.basePos.clone().addScaledVector(vc.axis,tE);
+      const radE=new THREE.Vector3().subVectors(ePos,rcE);
+      radE.addScaledVector(vc.axis,-radE.dot(vc.axis));
+      const rTE=vc.r*(1-tE/vc.h);
+      if(radE.length()<rTE){
+        const expel=radE.length()>0.001?radE.clone().normalize():eDir.clone();
+        e.position.copy(rcE).addScaledVector(expel,rTE+2.0);
+        const eD2=e.position.clone().normalize();
+        e.position.setLength(getPlanetHeight(eD2)+e.userData.hoverH);
+        continue;
+      }
+      // Surface push
+      const cp=closestPointOnCone(ePos,vc.basePos,vc.axis,vc.r,vc.h);
+      const dE=ePos.distanceTo(cp);
+      if(dE<2.0){
+        const pD=new THREE.Vector3().subVectors(ePos,cp).normalize().multiplyScalar(2.0-dE+0.1);
+        e.position.add(pD);
+        const eD3=e.position.clone().normalize();
+        e.position.setLength(getPlanetHeight(eD3)+e.userData.hoverH);
+      }
+    }
+  }
+
   for(const e of dead){
     killExplosion(e.position.clone());scene.remove(e);
     playExplosionSound(e.position.clone());
@@ -1551,54 +1584,59 @@ function updatePlayer(dt){
   }
 
   // ── Volcano collision — analytical closest-point-on-cone ──────────
-  // For each volcano:
-  //   1. Fast angular pre-cull (cheap).
-  //   2. closestPointOnCone() gives the exact surface point closest to the player.
-  //   3. If distance < PLAYER_R, push the player's position along the vector
-  //      from that surface point to the player, projected tangentially so the
-  //      player stays on the sphere surface.
-  //   4. Re-snap to terrain height after the push.
-  // No raycasting → no oscillation, no "inside the mesh" edge cases.
   const PLAYER_R=1.2;
   const playerDir=dolly.position.clone().normalize();
   const playerRad=dolly.position.length();
 
   for(const vc of volcanoColliders){
-    // ① Fast bounding pre-cull
     const approxArc=playerDir.angleTo(vc.axis)*PLANET_R;
     if(approxArc>vc.r+PLAYER_R+6) continue;
-
-    // ② Height range check — only care about the visible above-terrain portion.
-    //    Cone base is 25 units underground; terrain surface is at vc.terrainR.
-    //    We only push when the player is at or above the terrain surface level.
     const htAboveBase=playerRad-vc.baseR;
     if(htAboveBase<22||htAboveBase>vc.h+PLAYER_R+2) continue;
 
-    // ③ Closest point on cone surface
+    // ── Volume escape: is the player INSIDE the cone? ─────────────
+    // If so, push directly outward from the cone axis — this is the
+    // most reliable escape from a stuck state regardless of how deeply
+    // the player is embedded.
+    const toP=new THREE.Vector3().subVectors(dolly.position,vc.basePos);
+    const tClamped=Math.max(0,Math.min(vc.h,toP.dot(vc.axis)));
+    const ringCentre=vc.basePos.clone().addScaledVector(vc.axis,tClamped);
+    const rAtT=vc.r*(1-tClamped/vc.h);
+    const radialFromAxis=new THREE.Vector3().subVectors(dolly.position,ringCentre);
+    radialFromAxis.addScaledVector(vc.axis,-radialFromAxis.dot(vc.axis));
+    const radialDist=radialFromAxis.length();
+    if(radialDist<rAtT){
+      // Player is inside the cone volume — expel immediately
+      const expelDir=radialDist>0.001
+        ? radialFromAxis.clone().normalize()
+        : new THREE.Vector3().subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis))).normalize();
+      // Move to just outside the cone surface at this ring
+      dolly.position.copy(ringCentre).addScaledVector(expelDir,rAtT+PLAYER_R+0.2);
+      // Re-snap to terrain
+      const ed=dolly.position.clone().normalize();
+      dolly.position.setLength(getPlanetHeight(ed));
+      continue; // already resolved, skip surface test
+    }
+
+    // ── Surface proximity push ─────────────────────────────────────
     const closestPt=closestPointOnCone(dolly.position,vc.basePos,vc.axis,vc.r,vc.h);
     const toPlayer=new THREE.Vector3().subVectors(dolly.position,closestPt);
     const dist=toPlayer.length();
-    if(dist>=PLAYER_R) continue; // no penetration
+    if(dist>=PLAYER_R) continue;
 
-    // ④ Push direction — away from cone surface, stripped of radial component
     let pushDir;
     if(dist>0.001){
       pushDir=toPlayer.clone().normalize();
     }else{
-      // Player is exactly on the surface point — push angularly away from axis
       pushDir=new THREE.Vector3()
         .subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis)));
       if(pushDir.lengthSq()<0.0001) continue;
       pushDir.normalize();
     }
-    // Remove the radial (planet-normal) component so we slide tangentially
     pushDir.addScaledVector(playerDir,-pushDir.dot(playerDir));
     if(pushDir.lengthSq()<0.0001) continue;
     pushDir.normalize();
-
-    // ⑤ Apply push and re-snap to terrain
-    const penetration=PLAYER_R-dist+0.12;
-    dolly.position.addScaledVector(pushDir,penetration);
+    dolly.position.addScaledVector(pushDir,PLAYER_R-dist+0.12);
     const newDir=dolly.position.clone().normalize();
     dolly.position.setLength(getPlanetHeight(newDir));
   }
