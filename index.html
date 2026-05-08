@@ -132,9 +132,11 @@ let enemies=[], pBolts=[], eBolts=[], explosions=[];
 let lavaLights=[], plumeList=[];
 let rockGroups=[];    // [{meshes:[lod0,lod1], lastLOD}] for distance-based LOD
 let volcanoLODs=[];   // [{meshes:[lod0,lod1,lod2], lastLOD}] per volcano
+let portals=[];       // [{group,discMat,pos,surfNorm,discNormal,cooldown}]
 // Volcano colliders — XZ centre, base radius, height, base world Y
 // Populated in buildVolcanoes() after terrain heights are known.
 let volcanoColliders=[];
+let pyramidColliders=[]; // [{basePos,axis,r,h,baseR}] — same format used by closestPointOnCone
 
 // ── Input state ────────────────────────────────────────────────────────
 let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false;
@@ -405,6 +407,8 @@ function buildWorld(){
   buildTerrain();
   buildRocks();
   buildVolcanoes();
+  buildPortals();
+  buildPyramids();
   // Lighting — fixed sun position matching Io's orbital relationship with Jupiter
   ambientLight=new THREE.AmbientLight(0x201510,0.55);scene.add(ambientLight);
   sunLight=new THREE.DirectionalLight(0xffe8cc,1.6);
@@ -1002,6 +1006,7 @@ function startGame(){
   clearUpgradeCards();
   stopAllEnemyHums();
   craters.forEach(c=>scene.remove(c.mesh));craters=[];
+  portals.forEach(p=>{p.cooldown=0;});
   weaponCondition={};
   setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
@@ -1350,6 +1355,13 @@ function updateEnemies(dt){
     }
   }
 
+  // ── Enemy pyramid collision ──────────────────────────────────────
+  for(const e of enemies){
+    applyPyramidCollision(e.position,2.2,false);
+    const eD4=e.position.clone().normalize();
+    e.position.setLength(getPlanetHeight(eD4)+e.userData.hoverH);
+  }
+
   for(const e of dead){
     killExplosion(e.position.clone());scene.remove(e);
     playExplosionSound(e.position.clone());
@@ -1649,6 +1661,9 @@ function updatePlayer(dt){
     const newDir=dolly.position.clone().normalize();
     dolly.position.setLength(getPlanetHeight(newDir));
   }
+
+  // ── Pyramid collision ─────────────────────────────────────────────
+  applyPyramidCollision(dolly.position, PLAYER_R, true);
 
   // ── Spherical gravity + terrain following ─────────────────────────
   const surfDirP=dolly.position.clone().normalize();
@@ -3522,7 +3537,7 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
   // ── Seek line of sight after 5 seconds out of view ────────────────
   // Move toward a point in front of the player projected onto the sphere
   // surface, at 1.5× normal speed, bypassing all other AI modes.
-  if(ud.outOfSightTimer>=5.0){
+  if(ud.outOfSightTimer>=3.0){
     // Target: player position + camera-forward tangent * 20 units
     const playerDir=_camWP.clone().normalize();
     // Project camFwd onto sphere tangent plane at player position
@@ -3746,6 +3761,235 @@ function speak(text){
 }
 function updateVoiceCooldown(dt){voiceCooldown=Math.max(0,voiceCooldown-dt);}
 
+
+
+// ════════════════════════════════════════════════════════════════
+//  GIZA PYRAMIDS  — three square pyramids on the southern side
+//  Scaled proportionally to the real Giza layout.
+//  Collision reuses closestPointOnCone() — a square pyramid
+//  with 4 sides approximates a cone at any given height.
+// ════════════════════════════════════════════════════════════════
+
+function buildPyramids(){
+  // Giza-proportion layout on the southern hemisphere.
+  // Real ratios: Khufu ~230 m base / Khafre ~215 m / Menkaure ~102 m,
+  // arranged along a NE→SW diagonal with similar inter-monument spacing.
+  const sandMat=new THREE.MeshStandardMaterial({color:0xd4a040,roughness:.90,metalness:.04});
+  const defs=[
+    // Khufu — largest, northeastern position
+    {dir:new THREE.Vector3( 0.14,-0.80, 0.42).normalize(), r:28, h:22},
+    // Khafre — slightly smaller, offset southwest
+    {dir:new THREE.Vector3(-0.10,-0.84, 0.18).normalize(), r:26, h:20},
+    // Menkaure — noticeably smaller, further southwest
+    {dir:new THREE.Vector3(-0.32,-0.82, 0.06).normalize(), r:14, h:11},
+  ];
+
+  defs.forEach(pd=>{
+    const axis=pd.dir.clone();               // apex points radially outward
+    const surfR=getPlanetHeight(axis);
+    const basePos=axis.clone().multiplyScalar(surfR);
+    const coneCenter=basePos.clone().addScaledVector(axis,pd.h/2);
+
+    // ConeGeometry(radius, height, 4) = square pyramid
+    const geo=new THREE.ConeGeometry(pd.r,pd.h,4,1,false);
+    const mesh=new THREE.Mesh(geo,sandMat.clone());
+    mesh.position.copy(coneCenter);
+    // Orient: ConeGeometry apex at +Y; rotate so +Y aligns with surface normal
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),axis);
+    // Rotate 45° around the axis so the pyramid faces cardinal tangents
+    mesh.rotateOnWorldAxis(axis,Math.PI/4);
+    scene.add(mesh);
+
+    // Store collider (same API as volcano colliders)
+    pyramidColliders.push({basePos:basePos.clone(),axis,r:pd.r,h:pd.h,baseR:surfR});
+  });
+}
+
+// ── Apply pyramid collision (player + enemies) ────────────────────
+// Reuses closestPointOnCone() which is already defined above.
+// Pyramids sit ON the surface (not embedded), so no height offset needed.
+function applyPyramidCollision(pos, radius, isOnSurface){
+  // pos       = THREE.Vector3 position to test and push
+  // radius    = capsule radius (PLAYER_R or enemy clearance)
+  // isOnSurface = true → re-snap to terrain after push
+  const posRad=pos.length();
+  const posDir=pos.clone().normalize();
+
+  for(const pc of pyramidColliders){
+    // Fast angular pre-cull
+    if(posDir.angleTo(pc.axis)*PLANET_R>pc.r+radius+6) continue;
+    const ht=posRad-pc.baseR;
+    if(ht<-radius||ht>pc.h+radius) continue;
+
+    // Volume escape: is pos inside the pyramid cone?
+    const toP=new THREE.Vector3().subVectors(pos,pc.basePos);
+    const t=Math.max(0,Math.min(pc.h,toP.dot(pc.axis)));
+    const ringC=pc.basePos.clone().addScaledVector(pc.axis,t);
+    const rT=pc.r*(1-t/pc.h);
+    const radComp=new THREE.Vector3().subVectors(pos,ringC);
+    radComp.addScaledVector(pc.axis,-radComp.dot(pc.axis));
+    if(radComp.length()<rT){
+      const expel=radComp.length()>0.001?radComp.clone().normalize():posDir.clone();
+      pos.copy(ringC).addScaledVector(expel,rT+radius+0.15);
+      if(isOnSurface){const d=pos.clone().normalize();pos.setLength(getPlanetHeight(d));}
+      continue;
+    }
+
+    // Surface proximity push
+    const cp=closestPointOnCone(pos,pc.basePos,pc.axis,pc.r,pc.h);
+    const toPos=new THREE.Vector3().subVectors(pos,cp);
+    const dist=toPos.length();
+    if(dist>=radius) continue;
+
+    let pushDir=dist>0.001?toPos.clone().normalize()
+      :new THREE.Vector3().subVectors(posDir,pc.axis.clone().multiplyScalar(posDir.dot(pc.axis))).normalize();
+    // Strip radial component so player stays on surface
+    pushDir.addScaledVector(posDir,-pushDir.dot(posDir));
+    if(pushDir.lengthSq()<0.0001) continue;
+    pushDir.normalize();
+    pos.addScaledVector(pushDir,radius-dist+0.12);
+    if(isOnSurface){const d=pos.clone().normalize();pos.setLength(getPlanetHeight(d));}
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  STARGATE PORTALS  — East & West, animated swirl, teleport
+// ════════════════════════════════════════════════════════════════
+
+function buildPortals(){
+  const defs=[
+    {dir:new THREE.Vector3( 0.82,0.57,0.0).normalize(), col:0x0088ff, label:'East'},
+    {dir:new THREE.Vector3(-0.82,0.57,0.0).normalize(), col:0xff6600, label:'West'},
+  ];
+  defs.forEach((pd,i)=>{
+    const surfNorm=pd.dir.clone();
+    const surfR=getPlanetHeight(surfNorm);
+    const surfPos=surfNorm.clone().multiplyScalar(surfR);
+
+    const g=new THREE.Group();
+
+    // ── Outer frame ring ─────────────────────────────────────────
+    const ring=new THREE.Mesh(
+      new THREE.TorusGeometry(5,.50,14,64),
+      new THREE.MeshStandardMaterial({
+        color:0x334455,metalness:.95,roughness:.10,
+        emissive:new THREE.Color(pd.col),emissiveIntensity:.45
+      })
+    );
+    g.add(ring);
+
+    // ── Inner animated swirl disc ─────────────────────────────────
+    const discMat=new THREE.ShaderMaterial({
+      uniforms:{uTime:{value:0},uColor:{value:new THREE.Color(pd.col)}},
+      vertexShader:`varying vec2 vUv;
+        void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+      fragmentShader:`
+        uniform float uTime;uniform vec3 uColor;varying vec2 vUv;
+        void main(){
+          vec2 p=vUv*2.-1.;float r=length(p);
+          if(r>0.96)discard;
+          float a=atan(p.y,p.x);
+          // Layered spiral: fast outer ring + slow deep swirl
+          float s1=sin(a*5.-r*14.+uTime*3.2)*.35+.55;
+          float s2=sin(a*3.+r*8.-uTime*1.8)*.25+.60;
+          float s3=sin(r*22.-uTime*5.0)*.15+.85;
+          float br=s1*s2*s3*smoothstep(.96,.55,r);
+          gl_FragColor=vec4(uColor*br*2.,br*.90);
+        }`,
+      transparent:true,side:THREE.DoubleSide,
+      blending:THREE.AdditiveBlending,depthWrite:false
+    });
+    const disc=new THREE.Mesh(new THREE.CircleGeometry(4.85,64),discMat);
+    g.add(disc);
+
+    // ── Outer glow halo ───────────────────────────────────────────
+    const halo=new THREE.Mesh(
+      new THREE.TorusGeometry(5.6,1.2,6,32),
+      new THREE.MeshBasicMaterial({color:pd.col,transparent:true,opacity:.18,
+        blending:THREE.AdditiveBlending,depthWrite:false})
+    );
+    g.add(halo);
+
+    // ── Chevron markers (8 evenly spaced nubs on the outer ring) ─
+    for(let k=0;k<8;k++){
+      const a=k/8*Math.PI*2;
+      const chev=new THREE.Mesh(
+        new THREE.BoxGeometry(.3,.6,.5),
+        new THREE.MeshStandardMaterial({color:pd.col,emissive:new THREE.Color(pd.col),emissiveIntensity:.8})
+      );
+      chev.position.set(Math.cos(a)*5.1,Math.sin(a)*5.1,0);
+      g.add(chev);
+    }
+
+    // ── Point light ───────────────────────────────────────────────
+    const pl=new THREE.PointLight(pd.col,5,45);g.add(pl);
+
+    // ── Orientation: ring stands upright, hole axis faces North ──
+    // Torus default: ring in XY plane, hole axis = Z.
+    // We want: hole axis = tangential "north" direction, ring Y = surface normal.
+    // Basis: X = right, Y = surfNorm (planet up), Z = discNormal (hole / walk-through)
+    const northish=new THREE.Vector3(0,1,0);
+    const discNormal=northish.clone()
+      .addScaledVector(surfNorm,-northish.dot(surfNorm)).normalize();
+    const right=new THREE.Vector3().crossVectors(surfNorm,discNormal).normalize();
+    const mat4=new THREE.Matrix4().makeBasis(right,surfNorm,discNormal);
+    g.quaternion.setFromRotationMatrix(mat4);
+    g.position.copy(surfPos);
+    scene.add(g);
+
+    portals.push({group:g,discMat,pos:surfPos.clone(),
+      surfNorm:surfNorm.clone(),discNormal:discNormal.clone(),cooldown:0,index:i});
+  });
+}
+
+function updatePortals(dt){
+  if(!portals.length) return;
+  const t=clock.elapsedTime;
+  for(const p of portals){
+    p.discMat.uniforms.uTime.value=t;
+    p.cooldown=Math.max(0,p.cooldown-dt);
+  }
+  if(!gameActive||portals.length<2) return;
+
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  for(let i=0;i<portals.length;i++){
+    const portal=portals[i];
+    if(portal.cooldown>0) continue;
+    if(camPos.distanceTo(portal.pos)>7) continue;
+
+    // ── Teleport ─────────────────────────────────────────────────
+    const other=portals[1-i];
+
+    // Exit point: 10 m along the OTHER portal's disc normal (walk-through direction)
+    // Project along sphere surface so the player doesn't leave the terrain.
+    const exitRaw=other.pos.clone().addScaledVector(other.discNormal,10);
+    const exitDir=exitRaw.clone().normalize();
+    const exitR=getPlanetHeight(exitDir);
+    dolly.position.copy(exitDir).multiplyScalar(exitR);
+
+    // Instantly align dolly up to new surface normal
+    const newNorm=exitDir.clone();
+    const curUp=new THREE.Vector3(0,1,0).applyQuaternion(dolly.quaternion);
+    const ang=curUp.angleTo(newNorm);
+    if(ang>0.001){
+      const ax=new THREE.Vector3().crossVectors(curUp,newNorm);
+      if(ax.lengthSq()>0.0001)
+        dolly.quaternion.premultiply(
+          new THREE.Quaternion().setFromAxisAngle(ax.normalize(),ang));
+    }
+
+    // Cooldown on both portals so player doesn't instantly re-enter
+    portal.cooldown=3.0;
+    other.cooldown=3.0;
+
+    haptic('right',1.0,220);haptic('left',1.0,180);
+    speak('Portal');
+    break;
+  }
+}
+
+
 // ════════════════════════════════════════════════════════════════
 //  RENDER LOOP
 // ════════════════════════════════════════════════════════════════
@@ -3792,6 +4036,7 @@ function loop(time,frame){
   updateDust(dt);
   updateRockLODs();
   updateVolcanoLODs();
+  updatePortals(dt);
   updateMuzzleCone(dt);
   updateKillFlash(dt);
   updateSaberTrails(dt);
