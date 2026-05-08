@@ -572,12 +572,12 @@ function buildVolcanoes(){
     lavaLights.push({light:ll,phase:Math.random()*Math.PI*2,base:6+Math.random()*4});
     buildPlume(plumeTop.x,plumeTop.y,plumeTop.z);
 
-    // Collider — store the actual LOD0 cone mesh for geometry-based raycasting
-    const surfacePos=coneAxis.clone().multiplyScalar(getPlanetHeight(coneAxis));
+    const terrainR=getPlanetHeight(coneAxis); // terrain surface radius at this volcano
+    const surfacePos=coneAxis.clone().multiplyScalar(terrainR);
     volcanoColliders.push({
       basePos:basePos.clone(), surfacePos, axis:coneAxis.clone(),
-      r:v.r, h:v.h, baseR,
-      mesh:m0  // LOD0 cone — used for per-frame raycasting collision
+      r:v.r, h:v.h, baseR, terrainR,
+      mesh:m0
     });
   });
 }
@@ -1409,6 +1409,33 @@ function updateBolts(dt){
 }
 
 // ── Player locomotion from XR gamepad ─────────────────────────────
+// ── Analytical cone collision helper ──────────────────────────────────────
+// Returns the closest point on the CONE SURFACE (slant + apex) to world point P.
+// B     = cone base centre (world), axis = unit vector from base toward apex,
+// r     = base radius, h = cone height.
+// Strategy: project P onto the axis, clamp to [0,h], find the ring at that height,
+// then find the nearest point on that ring from P.
+// This is O(1) vector math — no raycasting, no mesh queries.
+function closestPointOnCone(P, B, axis, r, h){
+  const toP=new THREE.Vector3().subVectors(P,B);
+  // Height of P projected along cone axis, clamped to cone range
+  const t=Math.max(0,Math.min(h, toP.dot(axis)));
+  // Centre and radius of the ring at height t
+  const C=B.clone().addScaledVector(axis,t);
+  const rT=r*(1-t/h); // tapers to 0 at apex
+  // Perpendicular component from ring-centre to P (strip the axis component)
+  const perp=new THREE.Vector3().subVectors(P,C);
+  perp.addScaledVector(axis,-perp.dot(axis));
+  const perpLen=perp.length();
+  if(perpLen<0.001){
+    // P is on the axis — return a point on the ring in an arbitrary perpendicular direction
+    const anyPerp=new THREE.Vector3(1,0,0)
+      .addScaledVector(axis,-axis.x).normalize();
+    return C.clone().addScaledVector(anyPerp,rT);
+  }
+  return C.clone().addScaledVector(perp,rT/perpLen);
+}
+
 const _fwd=new THREE.Vector3(),_rgt=new THREE.Vector3();
 function updatePlayer(dt){
   const session=renderer.xr.getSession();
@@ -1523,88 +1550,57 @@ function updatePlayer(dt){
     }
   }
 
-  // ── Volcano collision — geometry-based mesh raycasting ────────────
-  // For each volcano we cast several short rays from the player toward
-  // the cone mesh.  When a ray hits the mesh closer than PLAYER_R we
-  // extract the actual face normal from the geometry and use it as the
-  // push direction.  This means the player slides against the visible
-  // cone surface, not an invisible approximation.
+  // ── Volcano collision — analytical closest-point-on-cone ──────────
+  // For each volcano:
+  //   1. Fast angular pre-cull (cheap).
+  //   2. closestPointOnCone() gives the exact surface point closest to the player.
+  //   3. If distance < PLAYER_R, push the player's position along the vector
+  //      from that surface point to the player, projected tangentially so the
+  //      player stays on the sphere surface.
+  //   4. Re-snap to terrain height after the push.
+  // No raycasting → no oscillation, no "inside the mesh" edge cases.
   const PLAYER_R=1.2;
   const playerDir=dolly.position.clone().normalize();
   const playerRad=dolly.position.length();
 
   for(const vc of volcanoColliders){
-    if(!vc.mesh) continue;
-
-    // ① Cheap bounding pre-cull: angular distance on sphere surface
+    // ① Fast bounding pre-cull
     const approxArc=playerDir.angleTo(vc.axis)*PLANET_R;
-    if(approxArc>vc.r+PLAYER_R+10) continue;   // clearly too far
+    if(approxArc>vc.r+PLAYER_R+6) continue;
 
-    // ② Height range cull: player must be within the cone's axial range
+    // ② Height range check — only care about the visible above-terrain portion.
+    //    Cone base is 25 units underground; terrain surface is at vc.terrainR.
+    //    We only push when the player is at or above the terrain surface level.
     const htAboveBase=playerRad-vc.baseR;
-    if(htAboveBase<-PLAYER_R||htAboveBase>vc.h+PLAYER_R) continue;
+    if(htAboveBase<22||htAboveBase>vc.h+PLAYER_R+2) continue;
 
-    // ③ Fan of 5 short rays toward the volcano from the player position.
-    //    Rays span a 60° arc so we catch oblique approaches.
-    const toVolcano=new THREE.Vector3()
-      .subVectors(vc.surfacePos,dolly.position).normalize();
-    // Build two perpendicular spread axes in the player's tangent plane
-    const spreadA=new THREE.Vector3()
-      .crossVectors(toVolcano,playerDir).normalize();
-    const spreadB=new THREE.Vector3()
-      .crossVectors(toVolcano,spreadA).normalize();
-    const rayDirs=[
-      toVolcano.clone(),
-      toVolcano.clone().addScaledVector(spreadA, 0.5).normalize(),
-      toVolcano.clone().addScaledVector(spreadA,-0.5).normalize(),
-      toVolcano.clone().addScaledVector(spreadB, 0.5).normalize(),
-      toVolcano.clone().addScaledVector(spreadB,-0.5).normalize(),
-    ];
+    // ③ Closest point on cone surface
+    const closestPt=closestPointOnCone(dolly.position,vc.basePos,vc.axis,vc.r,vc.h);
+    const toPlayer=new THREE.Vector3().subVectors(dolly.position,closestPt);
+    const dist=toPlayer.length();
+    if(dist>=PLAYER_R) continue; // no penetration
 
-    let pushed=false;
-    for(const dir of rayDirs){
-      if(pushed) break;
-      volcRay.set(dolly.position,dir);
-      volcRay.far=PLAYER_R+4;
-      const hits=volcRay.intersectObject(vc.mesh,false);
-      if(!hits.length) continue;
-      const hit=hits[0];
-      if(hit.distance>=PLAYER_R+0.05) continue;
-
-      // Convert face normal from mesh local → world space
-      const worldNormal=hit.face.normal.clone()
-        .transformDirection(vc.mesh.matrixWorld).normalize();
-
-      // Keep only the tangential (surface-parallel) component of the normal
-      // so we never push the player into space or underground.
-      const tangNormal=worldNormal
-        .addScaledVector(playerDir,-worldNormal.dot(playerDir));
-      if(tangNormal.lengthSq()<0.0001) continue;
-      tangNormal.normalize();
-
-      // Push player along the tangential normal by the penetration depth
-      const penetration=PLAYER_R-hit.distance+0.08;
-      dolly.position.addScaledVector(tangNormal.negate(),penetration);
-      // Re-snap radially so the player stays at terrain height
-      const newDir2=dolly.position.clone().normalize();
-      dolly.position.setLength(getPlanetHeight(newDir2));
-      pushed=true;
-    }
-
-    // ④ Fallback: if all rays missed but the arc check says we're inside,
-    //    use a smooth angular push so we never silently clip through.
-    if(!pushed&&approxArc<vc.r*0.9+PLAYER_R){
-      const awayTan=new THREE.Vector3()
+    // ④ Push direction — away from cone surface, stripped of radial component
+    let pushDir;
+    if(dist>0.001){
+      pushDir=toPlayer.clone().normalize();
+    }else{
+      // Player is exactly on the surface point — push angularly away from axis
+      pushDir=new THREE.Vector3()
         .subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis)));
-      if(awayTan.lengthSq()>0.0001){
-        awayTan.normalize();
-        const shortfall=(vc.r*0.9+PLAYER_R-approxArc)/PLANET_R;
-        const q=new THREE.Quaternion()
-          .setFromAxisAngle(awayTan.clone().cross(playerDir).normalize(),shortfall);
-        const newDir3=playerDir.clone().applyQuaternion(q).normalize();
-        dolly.position.copy(newDir3).multiplyScalar(getPlanetHeight(newDir3));
-      }
+      if(pushDir.lengthSq()<0.0001) continue;
+      pushDir.normalize();
     }
+    // Remove the radial (planet-normal) component so we slide tangentially
+    pushDir.addScaledVector(playerDir,-pushDir.dot(playerDir));
+    if(pushDir.lengthSq()<0.0001) continue;
+    pushDir.normalize();
+
+    // ⑤ Apply push and re-snap to terrain
+    const penetration=PLAYER_R-dist+0.12;
+    dolly.position.addScaledVector(pushDir,penetration);
+    const newDir=dolly.position.clone().normalize();
+    dolly.position.setLength(getPlanetHeight(newDir));
   }
 
   // ── Spherical gravity + terrain following ─────────────────────────
