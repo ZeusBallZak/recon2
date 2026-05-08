@@ -265,10 +265,10 @@ void main(){
 
 // ── Jupiter ─────────────────────────────────────────────────────
 const jupV=`varying vec2 vUv;varying vec3 vN;
-void main(){vUv=uv;vN=normalMatrix*normal;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+void main(){vUv=uv;vN=normal;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
 
 const jupF=`
-uniform float uTime;varying vec2 vUv;varying vec3 vN;
+uniform float uTime;uniform vec3 uSunDir;varying vec2 vUv;varying vec3 vN;
 float hh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float nn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hh(i),hh(i+vec2(1,0)),f.x),mix(hh(i+vec2(0,1)),hh(i+vec2(1,1)),f.x),f.y);}
 float fb(vec2 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*nn(p);p=p*2.+vec2(3.1,1.7);a*=.5;}return v;}
@@ -317,10 +317,14 @@ void main(){
   vec2 sp2=(uv-vec2(0.21,0.56))*vec2(6.,14.);
   col=mix(col,vec3(.96,.86,.72),smoothstep(1.,.1,length(sp2))*.7);
 
-  vec3 Nn=normalize(vN);float limb=dot(Nn,vec3(0.,0.,1.));
-  col*=mix(.20,1.,pow(max(limb,0.),.5));
-  col+=vec3(.18,.10,.04)*(1.-limb)*(1.-limb)*.8;
-  gl_FragColor=vec4(col,1.);}`;
+  // ── Sun directional shading (world-space) ────────────────────────
+  vec3 Nn=normalize(vN);
+  float sunDot=dot(Nn,uSunDir);
+  float diff=max(0.20,sunDot);
+  col*=diff;
+  float terminator=smoothstep(-0.15,0.15,sunDot); // 0=night,1=day
+  col+=vec3(.12,.05,.01)*(1.-terminator)*0.6; // night-side orange atmospheric edge
+  gl_FragColor=vec4(col,1.);}`;  
 
 // ── Laser Bolt — rim/NdotV glow + travelling energy pulse ─────
 const laserV=`
@@ -476,7 +480,8 @@ function buildStarfield(){
 }
 
 function buildJupiter(){
-  jupU={uTime:{value:0}};
+  const jupSunDir=new THREE.Vector3(320,480,-260).normalize();
+  jupU={uTime:{value:0}, uSunDir:{value:jupSunDir}};
   const jup=new THREE.Mesh(new THREE.SphereGeometry(420,64,48),new THREE.ShaderMaterial({uniforms:jupU,vertexShader:jupV,fragmentShader:jupF}));
   jup.position.set(-850,620,-1900);scene.add(jup);
   jup.add(new THREE.Mesh(new THREE.SphereGeometry(462,24,18),new THREE.MeshBasicMaterial({color:0x774422,transparent:true,opacity:.06,side:THREE.BackSide})));
