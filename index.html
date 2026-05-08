@@ -770,6 +770,19 @@ function drawHUD(){
   ctx.font='11px monospace';
   ctx.fillText('WALK NEAR PICKUPS TO GRAB', 16, 210);
 
+  // ── Planet coordinates ─────────────────────────────────────────
+  // Latitude  = arcsin(y)   → N/S
+  // Longitude = atan2(x, z) → E/W  (x=East, z=South for our planet)
+  const dir=dolly.position.clone().normalize();
+  const latDeg=Math.asin(Math.max(-1,Math.min(1,dir.y)))*180/Math.PI;
+  const lonDeg=Math.atan2(dir.x,dir.z)*180/Math.PI;
+  const latStr=Math.abs(latDeg).toFixed(1)+'° '+(latDeg>=0?'N':'S');
+  const lonStr=Math.abs(lonDeg).toFixed(1)+'° '+(lonDeg>=0?'E':'W');
+  ctx.fillStyle='rgba(180,220,255,0.70)';
+  ctx.font='bold 12px monospace';
+  ctx.fillText(latStr, 16, 232);
+  ctx.fillText(lonStr, 16, 250);
+
   // Wave / Score / Kills / Combo / Shield
   ctx.textAlign='right';ctx.font='bold 15px monospace';ctx.fillStyle=cd;
   ctx.fillText(`WAVE  ${wave}`,W-16,118);
