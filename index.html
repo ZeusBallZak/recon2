@@ -1802,7 +1802,7 @@ function updateLava(){
 // ── Wave escalation ────────────────────────────────────────────────
 function updateWaves(now){
   if(!gameActive||upgradePhase)return;
-  const maxE=Math.min(12, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
+  const maxE=Math.min(9, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
   if(enemies.length<maxE&&now-lastSpawn>spawnI){spawnEnemy();lastSpawn=now;}
   if(score>=waveThresh&&wave<12){
     wave++;waveThresh=score+500*wave;
@@ -1958,7 +1958,7 @@ function createBoltBuzz(bolt){
   // Master gain — fade in so the onset isn't a click
   const master=ctx.createGain();
   master.gain.setValueAtTime(0,ctx.currentTime);
-  master.gain.linearRampToValueAtTime(0.75,ctx.currentTime+0.04);
+  master.gain.linearRampToValueAtTime(0.375,ctx.currentTime+0.04); // half volume
   master.connect(pan);
 
   // LFO tremolo at 30 Hz — the "buzzing" texture character
@@ -2029,7 +2029,7 @@ function playEnemyShot(worldPos){
   setPannerPos(pan,worldPos);
   pan.connect(ctx.destination);
 
-  const master=ctx.createGain();master.gain.value=0.80;master.connect(pan);
+  const master=ctx.createGain();master.gain.value=0.40;master.connect(pan); // half volume
 
   // Square sweep: 180 → 35 Hz (lowered from 520→90 — sub-bass thud)
   const o1=ctx.createOscillator();o1.type='square';
