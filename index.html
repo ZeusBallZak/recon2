@@ -256,7 +256,7 @@ void main(){
   float lE=clamp(crack*(cal*1.5+.25),0.,1.);
   vec3 lCol=mix(lava,lC,smoothstep(.4,1.,lE));col=mix(col,lCol,lE);
   vec3 N=normalize(vN),L=normalize(vec3(.35,.85,.25));
-  float diff=max(.18,dot(N,L));
+  float diff=max(.20,dot(N,L));
   float sp=pow(max(0.,dot(reflect(-L,N),vec3(0.,0.,-1.))),12.)*.06;
   gl_FragColor=vec4(col*diff+sp+lCol*lE*.35,1.);}`;
 
@@ -412,9 +412,23 @@ function buildWorld(){
   // Lighting — fixed sun position matching Io's orbital relationship with Jupiter
   ambientLight=new THREE.AmbientLight(0x201510,0.55);scene.add(ambientLight);
   sunLight=new THREE.DirectionalLight(0xffe8cc,1.6);
-  // Sun sits high to the upper-right, casting long warm shadows across the terrain
   sunLight.position.set(320, 480, -260).normalize().multiplyScalar(600);
   scene.add(sunLight);
+  // Sun sprite — always at the directional light's direction, very far away
+  const sunSpriteMat=new THREE.SpriteMaterial({
+    color:0xfff5cc,transparent:true,opacity:1.0,
+    blending:THREE.AdditiveBlending,depthWrite:false
+  });
+  const sunSprite=new THREE.Sprite(sunSpriteMat);
+  sunSprite.scale.setScalar(120); // large enough to read as a disc in VR
+  sunSprite.position.copy(sunLight.position.clone().normalize().multiplyScalar(2800));
+  scene.add(sunSprite);
+  // Soft glow halo behind the disc
+  const halMat=new THREE.SpriteMaterial({color:0xffdd88,transparent:true,opacity:.35,blending:THREE.AdditiveBlending,depthWrite:false});
+  const sunHalo=new THREE.Sprite(halMat);
+  sunHalo.scale.setScalar(320);
+  sunHalo.position.copy(sunSprite.position);
+  scene.add(sunHalo);
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
 }
 
@@ -502,7 +516,8 @@ function buildRocks(){
     const phi=Math.acos(1-Math.random()*1.8); // bias toward north hemisphere
     const nx=Math.sin(phi)*Math.cos(theta), ny=Math.cos(phi), nz=Math.sin(phi)*Math.sin(theta);
     const col=rc[Math.floor(Math.random()*rc.length)];
-    const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85,metalness:.05});
+    const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85,metalness:.05,
+      emissive:new THREE.Color(col),emissiveIntensity:.20});
     const sz=.4+Math.random()**2*5;
 
     const geo0=new THREE.IcosahedronGeometry(sz,0), pa=geo0.attributes.position;
@@ -529,7 +544,8 @@ function buildRocks(){
 }
 
 function buildVolcanoes(){
-  const volcMat=new THREE.MeshStandardMaterial({color:0x201008,roughness:.95});
+  const volcMat=new THREE.MeshStandardMaterial({color:0x201008,roughness:.95,
+    emissive:new THREE.Color(0x201008),emissiveIntensity:.20});
   // Volcano directions on the sphere (normalised), with cone params
   const vDefs=[
     // Northern hemisphere (original 3)
@@ -3774,7 +3790,8 @@ function buildPyramids(){
   // Giza-proportion layout on the southern hemisphere.
   // Real ratios: Khufu ~230 m base / Khafre ~215 m / Menkaure ~102 m,
   // arranged along a NE→SW diagonal with similar inter-monument spacing.
-  const sandMat=new THREE.MeshStandardMaterial({color:0xd4a040,roughness:.90,metalness:.04});
+  const sandMat=new THREE.MeshStandardMaterial({color:0xd4a040,roughness:.90,metalness:.04,
+    emissive:new THREE.Color(0xd4a040),emissiveIntensity:.20});
   const defs=[
     // Khufu — largest, northeastern position
     {dir:new THREE.Vector3( 0.14,-0.80, 0.42).normalize(), r:28, h:22},
@@ -3785,8 +3802,8 @@ function buildPyramids(){
   ];
 
   defs.forEach(pd=>{
-    const axis=pd.dir.clone();               // apex points radially outward
-    const surfR=getPlanetHeight(axis);
+    const axis=pd.dir.clone();
+    const surfR=getPlanetHeight(axis)-18; // embed 18 units below surface like volcanoes
     const basePos=axis.clone().multiplyScalar(surfR);
     const coneCenter=basePos.clone().addScaledVector(axis,pd.h/2);
 
