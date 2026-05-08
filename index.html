@@ -812,7 +812,8 @@ function buildControllers(){
         if(gameOverState){ restartGame(); return; }
         if(gameActive){
           triggerHeld=true;
-          if(currentWeapon!=='flame') startCharge(); // flame uses hold-fire not charge
+          // Flame and dual ion gun use hold-fire instead of the charge mechanic
+          if(currentWeapon!=='flame'&&currentWeapon!=='dual') startCharge();
         }
       }
     });
@@ -820,8 +821,8 @@ function buildControllers(){
     ctrl.addEventListener('selectend',()=>{
       if(ctrl===rightCtrl && gameActive && triggerHeld){
         triggerHeld=false;
-        if(currentWeapon==='flame'){
-          stopCharge(); chargeTime=0; // no charge for flame
+        if(currentWeapon==='flame'||currentWeapon==='dual'){
+          stopCharge(); chargeTime=0; // hold-fire weapons — no charge mechanic
         } else if(chargeTime>=CHARGE_MAX){
           stopCharge();
         } else if(chargeTime<0.25){
@@ -3258,13 +3259,16 @@ function updateCharge(dt){
     const tip=getWeaponTipOffset();
     chargeFXGroup.position.copy(tip);
   }
-  // Flamethrower: triggerHeld drives continuous fire, no charge mechanic
-  if(currentWeapon==='flame'){
+  // Flamethrower and Dual Ion Gun: triggerHeld drives continuous fire, no charge mechanic
+  if(currentWeapon==='flame'||currentWeapon==='dual'){
     if(chargeSphere) chargeSphere.material.opacity=0;
     if(chargeBoids)  chargeBoids.material.opacity=0;
     if(triggerHeld&&gameActive){
       flameCooldown-=dt;
-      if(flameCooldown<=0) fireWeapon();
+      if(flameCooldown<=0){
+        flameCooldown=WEAPONS[currentWeapon].rate; // 0.12 for flame, 0.25 for dual
+        fireWeapon();
+      }
     }
     return;
   }
