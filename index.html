@@ -416,6 +416,7 @@ function buildWorld(){
   buildVolcanoes();
   buildPortals();
   buildPyramids();
+  buildScifiArtifacts();
   // Lighting — fixed sun position matching Io's orbital relationship with Jupiter
   ambientLight=new THREE.AmbientLight(0x201510,0.55);scene.add(ambientLight);
   sunLight=new THREE.DirectionalLight(0xffe8cc,1.6);
@@ -3891,6 +3892,260 @@ function applyPyramidCollision(pos, radius, isOnSurface){
     pos.addScaledVector(pushDir,radius-dist+0.12);
     if(isOnSurface){const d=pos.clone().normalize();pos.setLength(getPlanetHeight(d));}
   }
+}
+
+
+
+// ════════════════════════════════════════════════════════════════
+//  SCI-FI ARTIFACTS  — 20 iconic objects scattered on the surface
+// ════════════════════════════════════════════════════════════════
+function buildScifiArtifacts(){
+  // ── Shared helpers ───────────────────────────────────────────
+  // Place group on sphere surface; Y axis aligns with planet normal
+  function art(g,nx,ny,nz,yOff=0){
+    const n=new THREE.Vector3(nx,ny,nz).normalize();
+    const r=getPlanetHeight(n);
+    g.position.copy(n).multiplyScalar(r+yOff);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),n);
+    scene.add(g);
+  }
+  const M=(c,ro=.7,me=.2,ec=null,ei=0)=>{
+    const m=new THREE.MeshStandardMaterial({color:c,roughness:ro,metalness:me});
+    if(ec){m.emissive=new THREE.Color(ec);m.emissiveIntensity=ei;}return m;};
+  const add=(g,geo,mat,x=0,y=0,z=0,rx=0,ry=0,rz=0)=>{
+    const ms=new THREE.Mesh(geo,mat);
+    ms.position.set(x,y,z);if(rx||ry||rz)ms.rotation.set(rx,ry,rz);g.add(ms);return ms;};
+  const glow=(c,op=.6)=>new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:op,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+
+  // ── 1. MONOLITH — 2001: A Space Odyssey ─────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.BoxGeometry(1.5,9,4),new THREE.MeshStandardMaterial({color:0x000000,roughness:0,metalness:1,emissive:0x050505,emissiveIntensity:.5}),0,4.5,0);
+  art(g,.70,.50,.51);}
+
+  // ── 2. XENOMORPH EGG — Alien ─────────────────────────────────
+  {const g=new THREE.Group();
+  const eggMat=M(0x0d0800,.8,.2,0x332200,.3);
+  const body=new THREE.Mesh(new THREE.SphereGeometry(1.5,8,8),eggMat);
+  body.scale.set(1,1.55,1);body.position.y=1.8;g.add(body);
+  for(let i=0;i<4;i++){
+    const a=i/4*Math.PI*2;
+    const p=add(g,new THREE.BoxGeometry(.3,1.6,.08),M(0x1a1000,.9,.1,0x442200,.3));
+    p.position.set(Math.cos(a)*.7,2.8,Math.sin(a)*.7);p.rotation.set(.5*Math.cos(a),a,.5*Math.sin(a));}
+  add(g,new THREE.SphereGeometry(.5,6,6),glow(0x88ff33,.7),0,2.6,0);
+  const pl=new THREE.PointLight(0x66ff22,2.5,9);pl.position.y=2.8;g.add(pl);
+  art(g,.82,.28,.50);}
+
+  // ── 3. ENGINEER DERELICT SHIP — Prometheus ───────────────────
+  {const g=new THREE.Group();
+  const hull=new THREE.Mesh(new THREE.TorusGeometry(14,3.5,7,18,Math.PI*1.35),M(0x1a1810,.88,.35));
+  hull.rotation.x=Math.PI/2;g.add(hull);
+  const neck=add(g,new THREE.CylinderGeometry(1.5,2.5,6,6),M(0x181612,.85,.3),0,-2.5,14);
+  g.rotation.z=.25;art(g,.20,.50,-.86,6);}
+
+  // ── 4. TRIPOD WAR MACHINE — War of the Worlds ────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.CylinderGeometry(3,2,2,8),M(0x2a2a2a,.3,.9),0,15,0);
+  add(g,new THREE.SphereGeometry(2.5,8,6,0,Math.PI*2,0,Math.PI*.55),M(0x3a3a3a,.3,.85),0,17,0);
+  for(let i=0;i<3;i++){
+    const a=i/3*Math.PI*2;
+    const leg=add(g,new THREE.CylinderGeometry(.18,.4,17,5),M(0x222222,.4,.9),Math.cos(a)*5.5,6.5,Math.sin(a)*5.5);
+    leg.rotation.z=-Math.cos(a)*.38;leg.rotation.x=Math.sin(a)*.38;
+    add(g,new THREE.SphereGeometry(.9,5,4),M(0x1a1a1a,.5,.8),Math.cos(a)*10.5,.3,Math.sin(a)*10.5);}
+  add(g,new THREE.CylinderGeometry(.1,.1,3.5,5),M(0x331100,.4,.7,0xff3300,2.5),0,13,2.8,Math.PI*.15);
+  art(g,-.30,.50,-.82);}
+
+  // ── 5. PROTOMOLECULE — The Expanse ───────────────────────────
+  {const g=new THREE.Group();
+  const bm=glow(0x00aaff,.85);
+  add(g,new THREE.IcosahedronGeometry(1.5,1),glow(0x0088ff,.7),0,1.5,0);
+  for(let i=0;i<18;i++){
+    const len=2.5+Math.random()*7,th=Math.random()*Math.PI*2,ph=Math.random()*Math.PI;
+    const dx=Math.sin(ph)*Math.cos(th),dy=Math.abs(Math.cos(ph))+.25,dz=Math.sin(ph)*Math.sin(th);
+    const t=add(g,new THREE.CylinderGeometry(.06+Math.random()*.08,.14,len,4),bm,
+      dx*len*.5+0,dy*len*.5+1.5,dz*len*.5);
+    t.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(dx,dy,dz).normalize());}
+  const pl=new THREE.PointLight(0x0088ff,5,22);pl.position.y=1.5;g.add(pl);
+  art(g,.00,.65,-.76);}
+
+  // ── 6. CRASHED TIE FIGHTER — Star Wars ───────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.SphereGeometry(1.5,8,6),M(0x111111,.4,.8),0,0,0);
+  const wm=M(0x0d0d0d,.5,.7);
+  // Wing 1 — flat on ground
+  const w1=add(g,new THREE.CylinderGeometry(4.2,4.2,.15,6),wm,-5.5,-.5,0);w1.rotation.z=Math.PI/2;
+  // Wing 2 — broken, jutting up
+  const w2=new THREE.Mesh(new THREE.CylinderGeometry(4.2,4.2,.15,6),wm);
+  w2.rotation.z=2.35;w2.position.set(4.5,-1,0);g.add(w2);
+  for(let s of[-1.8,1.8])add(g,new THREE.CylinderGeometry(.12,.12,6,4),M(0x222222,.4,.9),s,0,0,0,0,Math.PI/2);
+  g.rotation.z=.45;art(g,-.80,.35,.46,1);}
+
+  // ── 7. MILLENNIUM FALCON DEBRIS — Star Wars ──────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.CylinderGeometry(8,8,1.2,16),M(0x888880,.7,.4),0,.4,0);
+  add(g,new THREE.BoxGeometry(2.5,1.2,3.2),M(0x777770,.65,.35),6,.8,0);
+  add(g,new THREE.SphereGeometry(.6,6,5),new THREE.MeshStandardMaterial({color:0x223355,roughness:.1,transparent:true,opacity:.65}),8.2,.8,0);
+  for(let i=0;i<6;i++){
+    const chunk=add(g,new THREE.BoxGeometry(.5+Math.random()*2,.18,.5+Math.random()*1.5),M(0x666660,.8,.35));
+    chunk.position.set((Math.random()-.5)*14,.2,(Math.random()-.5)*14);chunk.rotation.y=Math.random()*Math.PI;}
+  g.rotation.z=.18;art(g,-.70,.20,.68,1);}
+
+  // ── 8. SPINNER FLYING CAR — Blade Runner ─────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.BoxGeometry(3.2,1,7.5),M(0x554433,.5,.6),0,.5,0);
+  for(let zi of[-2.5,2.5])add(g,new THREE.BoxGeometry(3,.06,.7),M(0x443322,.4,.7),0,1.1,zi);
+  for(let x of[-1.3,1.3])for(let z of[-2.6,2.6])
+    add(g,new THREE.CylinderGeometry(.38,.38,.6,6),M(0x222222,.3,.9,0x2244cc,.45),x,-.2,z);
+  add(g,new THREE.BoxGeometry(2.8,.5,1.4),new THREE.MeshStandardMaterial({color:0x223355,roughness:.1,transparent:true,opacity:.55}),0,1.05,2.2);
+  art(g,-.60,.50,.62,2.5);}
+
+  // ── 9. DROPSHIP WRECK — Aliens ───────────────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.BoxGeometry(3.2,2.5,16),M(0x333322,.7,.4),0,0,0);
+  for(let s of[-1,1]){
+    const wing=add(g,new THREE.BoxGeometry(7,.35,4.5),M(0x2a2a1a,.7,.4),s*5.2,.5,2);
+    wing.rotation.z=s*.45;
+    add(g,new THREE.CylinderGeometry(.55,.55,2.2,6),M(0x222222,.5,.7),s*8.6,.3,2,0,0,Math.PI/2);}
+  add(g,new THREE.ConeGeometry(1.5,3.5,5),M(0x2a2a1a,.7,.3),0,0,-9,Math.PI/2);
+  g.rotation.z=.85;art(g,-.90,.30,.30,2);}
+
+  // ── 10. ESCAPE POD — Interstellar ────────────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.CylinderGeometry(1.8,1.5,5,8),M(0x444444,.4,.8),0,.5,0);
+  add(g,new THREE.SphereGeometry(1.7,8,5,0,Math.PI*2,0,Math.PI*.5),new THREE.MeshStandardMaterial({color:0x223355,roughness:.1,transparent:true,opacity:.55}),0,3,0);
+  add(g,new THREE.CylinderGeometry(2.6,2.6,.06,12),new THREE.MeshBasicMaterial({color:0x110500,transparent:true,opacity:.75}),0,.05,0);
+  art(g,-.50,.60,.62,-1.5);}
+
+  // ── 11. T-800 TERMINATOR ─────────────────────────────────────
+  {const g=new THREE.Group();
+  const cr=M(0x888888,.08,.95);
+  // Skull
+  const skull=add(g,new THREE.SphereGeometry(.62,8,7),cr,0,8,0);skull.scale.set(1,.88,1.12);
+  add(g,new THREE.BoxGeometry(.9,.28,.75),cr,0,7.1,.1);
+  for(let xe of[-.22,.22])add(g,new THREE.SphereGeometry(.11,5,4),new THREE.MeshBasicMaterial({color:0xff0000,transparent:true,opacity:.9,blending:THREE.AdditiveBlending}),xe,8.1,.55);
+  // Spine vertebrae
+  for(let i=0;i<7;i++)add(g,new THREE.BoxGeometry(.42,.55,.42),cr,0,5.8-i*.78,0);
+  // Ribs
+  for(let i=0;i<3;i++)add(g,new THREE.CylinderGeometry(.06,.06,2.6,4),cr,0,6.5-i*.5,0,0,0,Math.PI/2);
+  // Arms
+  for(let s of[-1,1]){
+    add(g,new THREE.CylinderGeometry(.15,.15,2.2,5),cr,s*1.2,5,0,0,0,s*.28);
+    add(g,new THREE.CylinderGeometry(.12,.12,1.9,5),cr,s*1.55,2.6,0,0,0,s*.45);}
+  // Legs
+  for(let s of[-1,1]){
+    add(g,new THREE.CylinderGeometry(.18,.15,2.8,5),cr,s*.42,1.4,0);
+    add(g,new THREE.CylinderGeometry(.15,.13,2.8,5),cr,s*.42,-1.3,0);
+    add(g,new THREE.BoxGeometry(.42,.3,.9),cr,s*.42,-2.9,.22);}
+  const pl=new THREE.PointLight(0xff2200,1.5,9);pl.position.y=8;g.add(pl);
+  art(g,.88,.10,-.46);}
+
+  // ── 12. WALL-E ────────────────────────────────────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.BoxGeometry(1.6,1.6,1.6),M(0x886633,.7,.35),0,1.6,0);
+  // Eye stalks + binocular eyes
+  for(let s of[-1,1]){
+    add(g,new THREE.CylinderGeometry(.1,.1,.9,5),M(0x333333,.4,.7),s*.36,2.75,.22);
+    add(g,new THREE.CylinderGeometry(.24,.24,.45,8),M(0x1a1800,.15,.2),s*.36,3.25,.22,Math.PI/2);
+    add(g,new THREE.CircleGeometry(.19,8),new THREE.MeshBasicMaterial({color:0x8888ff,transparent:true,opacity:.85}),s*.36,3.25,.46);}
+  // Treads
+  for(let s of[-1,1])add(g,new THREE.BoxGeometry(.38,1.1,2),M(0x1a1a1a,.9,.1),s*.9,.6,0);
+  // Solar arms
+  for(let s of[-1,1]){
+    const arm=add(g,new THREE.BoxGeometry(.1,.1,2.2),M(0x554422,.6,.3),s*1.1,2.2,.5);arm.rotation.z=s*.45;}
+  art(g,.82,.22,-.54);}
+
+  // ── 13. SENTINEL DRONE — The Matrix ──────────────────────────
+  {const g=new THREE.Group();
+  const body=add(g,new THREE.SphereGeometry(1.2,8,8),M(0x111111,.3,.9),0,2.5,0);body.scale.y=1.55;
+  add(g,new THREE.SphereGeometry(.28,6,5),new THREE.MeshBasicMaterial({color:0xff0000,transparent:true,opacity:.9,blending:THREE.AdditiveBlending}),0,3,.95);
+  const pl=new THREE.PointLight(0xff0000,2.5,9);pl.position.y=3;g.add(pl);
+  for(let i=0;i<12;i++){
+    const a=i/12*Math.PI*2,sp=.5+Math.random()*.55,len=2.5+Math.random()*2;
+    const t=add(g,new THREE.CylinderGeometry(.05,.14,len,4),M(0x222222,.5,.8),Math.cos(a)*sp,0,Math.sin(a)*sp);
+    t.rotation.z=Math.cos(a)*.9;t.rotation.x=Math.sin(a)*.9;}
+  art(g,.78,.30,-.55,2);}
+
+  // ── 14. K-2SO PARTS — Rogue One ──────────────────────────────
+  {const g=new THREE.Group();
+  const dk=M(0x1a1a1a,.4,.88);
+  const head=add(g,new THREE.SphereGeometry(.62,7,6),dk,0,.45,0);head.scale.set(1.12,1.35,1);head.rotation.z=.85;
+  add(g,new THREE.BoxGeometry(1.1,.9,1.6),dk,1.6,.35,1);
+  add(g,new THREE.CylinderGeometry(.19,.19,2.6,6),dk,-1.6,.22,-.5,0,0,.95);
+  add(g,new THREE.CylinderGeometry(.21,.21,3.2,6),dk,.6,.18,2.2,.95,0,.22);
+  for(let s of[-1,1])add(g,new THREE.SphereGeometry(.09,4,4),new THREE.MeshBasicMaterial({color:0xff4400,transparent:true,opacity:.5}),s*.2,.72,.49);
+  art(g,.88,.00,-.48);}
+
+  // ── 15. LIGHTSABER IN THE GROUND — Star Wars ─────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.CylinderGeometry(.13,.16,1.8,8),M(0x666666,.18,.98),.0,.9,0);
+  add(g,new THREE.CylinderGeometry(.14,.11,.35,8),M(0x888888,.1,.99),0,1.85,0);
+  add(g,new THREE.CylinderGeometry(.04,.07,5.5,6),glow(0x00ffff,.92),0,4.8,0);
+  add(g,new THREE.CylinderGeometry(.14,.2,5.5,6),glow(0x00aaff,.28),0,4.8,0);
+  const pl=new THREE.PointLight(0x00ccff,5,18);pl.position.y=5;g.add(pl);
+  art(g,.30,.77,.56);}
+
+  // ── 16. NEURALYZER — Men in Black ────────────────────────────
+  {const g=new THREE.Group();
+  const chrome=new THREE.MeshStandardMaterial({color:0xcccccc,roughness:.04,metalness:.99});
+  add(g,new THREE.CylinderGeometry(.22,.26,2.2,10),chrome,0,1.1,0);
+  add(g,new THREE.SphereGeometry(.22,8,6,0,Math.PI*2,0,Math.PI*.5),chrome,0,2.32,0);
+  add(g,new THREE.SphereGeometry(.08,5,4),new THREE.MeshBasicMaterial({color:0xffffff}),0,2.4,0);
+  const pw=new THREE.PointLight(0xffffff,.6,4);pw.position.y=2.4;g.add(pw);
+  art(g,-.40,.68,-.62,.5);}
+
+  // ── 17. POWER ORB — Guardians of the Galaxy ──────────────────
+  {const g=new THREE.Group();
+  for(let i=0;i<8;i++){const a=i/8*Math.PI*2;
+    const bar=add(g,new THREE.CylinderGeometry(.1,.1,2,4),M(0x222222,.3,.9),Math.cos(a)*1.7,1.5,Math.sin(a)*1.7);
+    bar.rotation.z=Math.PI/2;bar.rotation.x=a+Math.PI/2;}
+  for(let y of[.45,2.55])add(g,new THREE.Mesh(new THREE.TorusGeometry(1.7,.13,5,16)),M(0x333333,.3,.9),0,y,0,Math.PI/2);
+  add(g,new THREE.SphereGeometry(.92,10,8),glow(0xaa00dd,.9),0,1.5,0);
+  add(g,new THREE.SphereGeometry(.58,8,6),glow(0xff66ff,.75),0,1.5,0);
+  const pl=new THREE.PointLight(0xaa00ff,5.5,22);pl.position.y=1.5;g.add(pl);
+  art(g,.50,.72,-.48);}
+
+  // ── 18. ALIEN ARTIFACT SPHERE — Annihilation ─────────────────
+  {const g=new THREE.Group();
+  add(g,new THREE.SphereGeometry(3,14,12),new THREE.MeshPhysicalMaterial({color:0x888899,roughness:0,metalness:.92}),0,2,0);
+  for(let i=0;i<3;i++){
+    add(g,new THREE.TorusGeometry(3.6+i*.5,.09,5,28),glow(0x88aaff,.5-.1*i),0,2,0,i*.5,i*.8,i*.3);}
+  const pl=new THREE.PointLight(0x4488ff,2.5,22);pl.position.y=2;g.add(pl);
+  art(g,-.20,.78,.59);}
+
+  // ── 19. ANCIENT STARGATE — Stargate (stone, deactivated) ─────
+  {const g=new THREE.Group();
+  add(g,new THREE.TorusGeometry(7,.95,12,52),M(0x998877,.95,.04));
+  for(let i=0;i<9;i++){
+    const a=i/9*Math.PI*2;
+    add(g,new THREE.BoxGeometry(.58,.95,.65),M(0x776655,.95,.04,0x665544,.12),Math.cos(a)*7.3,Math.sin(a)*7.3,.1);}
+  add(g,new THREE.CircleGeometry(6.3,32),new THREE.MeshBasicMaterial({color:0x223344,transparent:true,opacity:.25,side:THREE.DoubleSide}));
+  g.rotation.x=.12;art(g,.58,.52,-.62);}
+
+  // ── 20. SANDWORM SKELETON — Dune ─────────────────────────────
+  {const g=new THREE.Group();
+  const bm=M(0xd4c4a0,.85,.04);
+  const segs=24;
+  const prev=new THREE.Vector3();
+  for(let i=0;i<segs;i++){
+    const t=i/(segs-1);
+    const lx=(t-.5)*68;
+    const lz=Math.sin(t*Math.PI*1.8)*10;
+    const ly=Math.sin(t*Math.PI)*22-1.5;// arcs above terrain, buried at ends
+    const segR=2.5+Math.sin(t*Math.PI)*5.5;
+    // Ring cross-section
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(segR,.55,6,14),bm);
+    ring.position.set(lx,ly,lz);
+    // Orient ring to face along the path tangent
+    const nx=68/(segs-1);
+    const nz=Math.cos(t*Math.PI*1.8)*Math.PI*1.8*10/(segs-1);
+    const ny=Math.cos(t*Math.PI)*Math.PI*22/(segs-1);
+    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(nx,ny,nz).normalize());
+    g.add(ring);
+    // Spine fins on every other segment
+    if(i%3===0&&ly>0){
+      const fin=add(g,new THREE.BoxGeometry(.3,segR*.7,.15),bm,lx,ly+segR*.5,lz);
+      fin.quaternion.copy(ring.quaternion);}
+  }
+  art(g,-.10,-.50,.88,0);}
 }
 
 
