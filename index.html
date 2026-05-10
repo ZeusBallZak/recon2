@@ -1600,10 +1600,17 @@ function updatePlayer(dt){
     const dU=new THREE.Vector3(0,1,0).applyQuaternion(dolly.quaternion);
     const ang=dU.angleTo(sN);
     if(ang>0.0015){
-      const ax=dU.clone().cross(sN);
-      if(ax.lengthSq()>1e-6){
+      const ax=new THREE.Vector3().crossVectors(dU,sN);
+      if(ax.lengthSq()>1e-8){
+        // Normal case: rotate around cross-product axis
         const step=Math.min(ang,4.5*dt);
         dolly.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(ax.normalize(),step));
+      } else {
+        // Degenerate case (nearly 180°): pick an arbitrary perpendicular axis
+        const perp=new THREE.Vector3(1,0,0);
+        if(Math.abs(sN.dot(perp))>.9) perp.set(0,0,1);
+        const safeAx=new THREE.Vector3().crossVectors(sN,perp).normalize();
+        dolly.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(safeAx,Math.min(ang,4.5*dt)));
       }
     }
   }
@@ -1707,10 +1714,18 @@ function updatePlayer(dt){
   applyPyramidCollision(dolly.position, PLAYER_R, true);
 
   // ── Spherical gravity + terrain following ─────────────────────────
+  // Guard: dolly must not be at origin (normalize would give NaN/zero)
+  if(dolly.position.lengthSq()<1){dolly.position.set(0,PLANET_R+2,0);}
   const surfDirP=dolly.position.clone().normalize();
+  // FBM gives the authoritative terrain surface radius at this direction —
+  // always computed because it matches the displaced geometry exactly.
+  const fbmGroundR=getPlanetHeight(surfDirP);
+  // Raycast refines it for sub-grid precision; falls back to FBM if it misses.
   floorRay.set(surfDirP.clone().multiplyScalar(PLANET_R*2), surfDirP.clone().negate());
-  const hits=floorRay.intersectObject(terrainMesh,false);
-  const groundR=hits.length>0 ? hits[0].point.length() : getPlanetHeight(surfDirP);
+  const hits=terrainMesh?floorRay.intersectObject(terrainMesh,false):[];
+  const groundR=hits.length>0
+    ? Math.max(hits[0].point.length(), fbmGroundR-3)
+    : fbmGroundR;
 
   if(!isGrounded){
     playerVY-=IO_GRAVITY*dt;
@@ -1725,6 +1740,19 @@ function updatePlayer(dt){
     }
   }else{
     dolly.position.setLength(THREE.MathUtils.lerp(dolly.position.length(),groundR,Math.min(1,dt*18)));
+  }
+
+  // ── Safety clamp: keep player on the planet ─────────────────────
+  // If the player has somehow escaped to space or phased into the core,
+  // teleport back to the surface above the north pole.
+  {
+    const rad=dolly.position.length();
+    if(rad>PLANET_R+150||rad<PLANET_R*0.5||isNaN(rad)){
+      dolly.position.set(0,getPlanetHeight({x:0,y:1,z:0}),0);
+      dolly.quaternion.identity();
+      playerVY=0;isGrounded=true;
+      console.warn('Player safety reset to surface');
+    }
   }
 
   // Shield passive regen
@@ -4097,7 +4125,7 @@ function buildScifiArtifacts(){
   for(let i=0;i<8;i++){const a=i/8*Math.PI*2;
     const bar=add(g,new THREE.CylinderGeometry(.1,.1,2,4),M(0x222222,.3,.9),Math.cos(a)*1.7,1.5,Math.sin(a)*1.7);
     bar.rotation.z=Math.PI/2;bar.rotation.x=a+Math.PI/2;}
-  for(let y of[.45,2.55])add(g,new THREE.Mesh(new THREE.TorusGeometry(1.7,.13,5,16)),M(0x333333,.3,.9),0,y,0,Math.PI/2);
+  for(let y of[.45,2.55])add(g,new THREE.TorusGeometry(1.7,.13,5,16),M(0x333333,.3,.9),0,y,0,Math.PI/2);
   add(g,new THREE.SphereGeometry(.92,10,8),glow(0xaa00dd,.9),0,1.5,0);
   add(g,new THREE.SphereGeometry(.58,8,6),glow(0xff66ff,.75),0,1.5,0);
   const pl=new THREE.PointLight(0xaa00ff,5.5,22);pl.position.y=1.5;g.add(pl);
