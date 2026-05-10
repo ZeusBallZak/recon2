@@ -1989,7 +1989,7 @@ function createBoltBuzz(bolt){
   // Master gain — fade in so the onset isn't a click
   const master=ctx.createGain();
   master.gain.setValueAtTime(0,ctx.currentTime);
-  master.gain.linearRampToValueAtTime(0.375,ctx.currentTime+0.04); // half volume
+  master.gain.linearRampToValueAtTime(0.1875,ctx.currentTime+0.04); // quarter of original
   master.connect(pan);
 
   // LFO tremolo at 30 Hz — the "buzzing" texture character
@@ -2060,7 +2060,7 @@ function playEnemyShot(worldPos){
   setPannerPos(pan,worldPos);
   pan.connect(ctx.destination);
 
-  const master=ctx.createGain();master.gain.value=0.40;master.connect(pan); // half volume
+  const master=ctx.createGain();master.gain.value=0.20;master.connect(pan); // half volume
 
   // Square sweep: 180 → 35 Hz (lowered from 520→90 — sub-bass thud)
   const o1=ctx.createOscillator();o1.type='square';
