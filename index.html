@@ -105,7 +105,7 @@ let damageSphere;
 // ── Game state ──────────────────────────────────────────────────────────
 let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
-let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0;
+let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0, waveBreakUntil=0;
 // ── Combo multiplier ─────────────────────────────────────────────
 let comboCount=0, comboTimer=0, comboMult=1;
 // ── Boss system ──────────────────────────────────────────────────
@@ -1052,7 +1052,7 @@ function startGame(){
   weaponCondition={};
   setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
-  score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;
+  score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;waveBreakUntil=0;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
   currentWeaponIndex=0;
@@ -1307,12 +1307,12 @@ function updateEnemies(dt){
     // Face toward player: compute the tangential component of toP
     const eUp=e.position.clone().normalize();
     const towardPlayer=toP.clone().normalize();
-    // Rotate enemy group so its local -Z points toward the player
-    const targetQ=new THREE.Quaternion();
+    // Build a look-at quaternion — lookAt makes local -Z face the target,
+    // but the enemy mesh faces +Z, so rotate 180° around the surface normal.
     const lookTarget=e.position.clone().add(towardPlayer.multiplyScalar(5));
-    // Build a look-at quaternion with surface normal as up
     const lookMat=new THREE.Matrix4().lookAt(e.position,lookTarget,eUp);
-    targetQ.setFromRotationMatrix(lookMat);
+    const targetQ=new THREE.Quaternion().setFromRotationMatrix(lookMat);
+    targetQ.multiply(new THREE.Quaternion().setFromAxisAngle(eUp,Math.PI));
     e.quaternion.slerp(targetQ,0.08);
 
     // ── LOD switching — only triggers on level change ──────────────
@@ -1834,17 +1834,20 @@ function updateLava(){
 function updateWaves(now){
   if(!gameActive||upgradePhase)return;
   const maxE=Math.min(9, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
-  if(enemies.length<maxE&&now-lastSpawn>spawnI){spawnEnemy();lastSpawn=now;}
+  // Block spawning during the 10-second inter-wave break
+  if(now>=waveBreakUntil && enemies.length<maxE && now-lastSpawn>spawnI){
+    spawnEnemy();lastSpawn=now;
+  }
   if(score>=waveThresh&&wave<12){
     wave++;waveThresh=score+500*wave;
     showWaveBanner(wave);drawHUD();
-    // Boss every 5th wave
-    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,1500);
-    // Pending upgrade: show cards when all enemies cleared
+    // 10-second break — clear remaining enemies' spawn timer so none appear
+    waveBreakUntil=now+10;
+    speak('Wave '+wave+'. 10 second break.');
+    // Boss every 5th wave (after the break)
+    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,11500);
     pendingUpgrade=true;
-    speak('Wave '+wave);
   }
-  // Show upgrade cards when pending and battlefield is clear
   if(pendingUpgrade&&!upgradePhase&&enemies.length===0) showUpgradeCards();
 }
 
@@ -1989,7 +1992,7 @@ function createBoltBuzz(bolt){
   // Master gain — fade in so the onset isn't a click
   const master=ctx.createGain();
   master.gain.setValueAtTime(0,ctx.currentTime);
-  master.gain.linearRampToValueAtTime(0.1875,ctx.currentTime+0.04); // quarter of original
+  master.gain.linearRampToValueAtTime(0.09375,ctx.currentTime+0.04);
   master.connect(pan);
 
   // LFO tremolo at 30 Hz — the "buzzing" texture character
@@ -2060,7 +2063,7 @@ function playEnemyShot(worldPos){
   setPannerPos(pan,worldPos);
   pan.connect(ctx.destination);
 
-  const master=ctx.createGain();master.gain.value=0.20;master.connect(pan); // half volume
+  const master=ctx.createGain();master.gain.value=0.10;master.connect(pan);
 
   // Square sweep: 180 → 35 Hz (lowered from 520→90 — sub-bass thud)
   const o1=ctx.createOscillator();o1.type='square';
