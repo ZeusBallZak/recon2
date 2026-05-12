@@ -373,6 +373,51 @@ function init(){
   camera=new THREE.PerspectiveCamera(80,innerWidth/innerHeight,0.05,5000);
   clock=new THREE.Clock();
 
+  // ── Procedural environment cube map for metallic reflections ───────
+  // Six 256² canvas faces simulating: bright top (sun), dark bottom (shadow),
+  // dim sides with Jupiter glow + scattered stars. Used by scene.environment
+  // so every MeshStandardMaterial with metalness > 0 picks it up automatically.
+  scene.environment=(function buildEnvMap(){
+    const sz=256, faces=[];
+    for(let f=0;f<6;f++){
+      const c=document.createElement('canvas');
+      c.width=c.height=sz;
+      const cx=c.getContext('2d');
+      if(f===2){ // +Y top : sun & warm sky
+        const g=cx.createRadialGradient(sz/2,sz/3,5,sz/2,sz/2,sz/1.4);
+        g.addColorStop(0,'#fff0c8');g.addColorStop(.18,'#ffcc88');
+        g.addColorStop(.55,'#553311');g.addColorStop(1,'#1a0808');
+        cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
+      } else if(f===3){ // -Y bottom : Io shadow
+        cx.fillStyle='#050202';cx.fillRect(0,0,sz,sz);
+        const g=cx.createRadialGradient(sz/2,sz/2,5,sz/2,sz/2,sz/2);
+        g.addColorStop(0,'#3a1808');g.addColorStop(1,'#000000');
+        cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
+      } else { // ±X, ±Z sides : dim space with stars + Jupiter
+        const g=cx.createLinearGradient(0,0,0,sz);
+        g.addColorStop(0,'#181028');g.addColorStop(.7,'#060610');g.addColorStop(1,'#020208');
+        cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
+        if(f===4){ // +Z front : Jupiter glow disc
+          const j=cx.createRadialGradient(sz*.35,sz*.35,4,sz*.35,sz*.35,sz*.18);
+          j.addColorStop(0,'#cc7744');j.addColorStop(.5,'#552210');
+          j.addColorStop(1,'rgba(0,0,0,0)');
+          cx.fillStyle=j;cx.fillRect(0,0,sz,sz);
+        }
+        for(let s=0;s<70;s++){
+          const sx=Math.random()*sz, sy=Math.random()*sz;
+          const sr=Math.random()*1.4+.3, sa=Math.random()*.7+.3;
+          cx.fillStyle=`rgba(255,${230+Math.random()*25|0},${200+Math.random()*55|0},${sa})`;
+          cx.beginPath();cx.arc(sx,sy,sr,0,Math.PI*2);cx.fill();
+        }
+      }
+      faces.push(c);
+    }
+    const cube=new THREE.CubeTexture(faces);
+    cube.needsUpdate=true;
+    if(THREE.sRGBEncoding) cube.encoding=THREE.sRGBEncoding;
+    return cube;
+  })();
+
   // ── Player dolly ─────────────────────────────────────────────
   // Dolly moves through the world (locomotion).
   // The XR system offsets the camera from dolly by the physical head pose,
@@ -3982,7 +4027,7 @@ function buildScifiArtifacts(){
   // ── 1. MONOLITH ─────────────────────────────────────────────────
   {const g=new THREE.Group();
   add(g,new THREE.BoxGeometry(1.5,9,4),new THREE.MeshStandardMaterial(
-    {color:0x000000,roughness:0,metalness:1,emissive:0x050505,emissiveIntensity:.5}),0,4.5,0);
+    {color:0x0a0a0a,roughness:.04,metalness:1.0,emissive:0x050505,emissiveIntensity:.5,envMapIntensity:1.4}),0,4.5,0);
   artL(g,.70,.50,.51, 3,
     new THREE.BoxGeometry(2,9,4.5), 0x050505, 4.5);}
 
@@ -4000,7 +4045,7 @@ function buildScifiArtifacts(){
 
   // ── 3. ENGINEER DERELICT SHIP ───────────────────────────────────
   {const g=new THREE.Group();
-  const hull=new THREE.Mesh(new THREE.TorusGeometry(14,3.5,7,18,Math.PI*1.35),M(0x1a1810,.88,.35));
+  const hull=new THREE.Mesh(new THREE.TorusGeometry(14,3.5,7,18,Math.PI*1.35),new THREE.MeshStandardMaterial({color:0x4a3820,roughness:.55,metalness:.85,envMapIntensity:.8}));
   hull.rotation.x=Math.PI/2;g.add(hull);
   add(g,new THREE.CylinderGeometry(1.5,2.5,6,6),M(0x181612,.85,.3),0,-2.5,14);
   g.rotation.z=.25;
@@ -4009,8 +4054,8 @@ function buildScifiArtifacts(){
 
   // ── 4. TRIPOD WAR MACHINE ───────────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.CylinderGeometry(3,2,2,8),M(0x2a2a2a,.3,.9),0,15,0);
-  add(g,new THREE.SphereGeometry(2.5,8,6,0,Math.PI*2,0,Math.PI*.55),M(0x3a3a3a,.3,.85),0,17,0);
+  add(g,new THREE.CylinderGeometry(3,2,2,8),new THREE.MeshStandardMaterial({color:0xc8c8c8,roughness:.18,metalness:1.0,envMapIntensity:1.2}),0,15,0);
+  add(g,new THREE.SphereGeometry(2.5,8,6,0,Math.PI*2,0,Math.PI*.55),new THREE.MeshStandardMaterial({color:0xd0d0d0,roughness:.12,metalness:1.0,envMapIntensity:1.3}),0,17,0);
   for(let i=0;i<3;i++){const a=i/3*Math.PI*2;
     const leg=add(g,new THREE.CylinderGeometry(.18,.4,17,5),M(0x222222,.4,.9),
       Math.cos(a)*5.5,6.5,Math.sin(a)*5.5);
@@ -4036,8 +4081,8 @@ function buildScifiArtifacts(){
 
   // ── 6. CRASHED TIE FIGHTER ──────────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.SphereGeometry(1.5,8,6),M(0x111111,.4,.8),0,0,0);
-  const wm=M(0x0d0d0d,.5,.7);
+  add(g,new THREE.SphereGeometry(1.5,8,6),new THREE.MeshStandardMaterial({color:0x161616,roughness:.18,metalness:1.0,envMapIntensity:1.2}),0,0,0);
+  const wm=new THREE.MeshStandardMaterial({color:0x0d0d0d,roughness:.15,metalness:1.0,envMapIntensity:1.3});
   const w1=add(g,new THREE.CylinderGeometry(4.2,4.2,.15,6),wm,-5.5,-.5,0);w1.rotation.z=Math.PI/2;
   const w2=new THREE.Mesh(new THREE.CylinderGeometry(4.2,4.2,.15,6),wm);
   w2.rotation.z=2.35;w2.position.set(4.5,-1,0);g.add(w2);
@@ -4048,7 +4093,7 @@ function buildScifiArtifacts(){
 
   // ── 7. MILLENNIUM FALCON DEBRIS ─────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.CylinderGeometry(8,8,1.2,16),M(0x888880,.7,.4),0,.4,0);
+  add(g,new THREE.CylinderGeometry(8,8,1.2,16),new THREE.MeshStandardMaterial({color:0xb8b8b0,roughness:.35,metalness:.95,envMapIntensity:1.0}),0,.4,0);
   add(g,new THREE.BoxGeometry(2.5,1.2,3.2),M(0x777770,.65,.35),6,.8,0);
   add(g,new THREE.SphereGeometry(.6,6,5),new THREE.MeshStandardMaterial(
     {color:0x223355,roughness:.1,transparent:true,opacity:.65}),8.2,.8,0);
@@ -4060,7 +4105,7 @@ function buildScifiArtifacts(){
 
   // ── 8. SPINNER (BLADE RUNNER) ────────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.BoxGeometry(3.2,1,7.5),M(0x554433,.5,.6),0,.5,0);
+  add(g,new THREE.BoxGeometry(3.2,1,7.5),new THREE.MeshStandardMaterial({color:0xb87333,roughness:.28,metalness:.96,envMapIntensity:1.1}),0,.5,0);
   for(let zi of[-2.5,2.5])add(g,new THREE.BoxGeometry(3,.06,.7),M(0x443322,.4,.7),0,1.1,zi);
   for(let x of[-1.3,1.3])for(let z of[-2.6,2.6])
     add(g,new THREE.CylinderGeometry(.38,.38,.6,6),M(0x222222,.3,.9,0x2244cc,.45),x,-.2,z);
@@ -4082,7 +4127,7 @@ function buildScifiArtifacts(){
 
   // ── 10. ESCAPE POD ──────────────────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.CylinderGeometry(1.8,1.5,5,8),M(0x444444,.4,.8),0,.5,0);
+  add(g,new THREE.CylinderGeometry(1.8,1.5,5,8),new THREE.MeshStandardMaterial({color:0xc0c0c0,roughness:.25,metalness:.98,envMapIntensity:1.2}),0,.5,0);
   add(g,new THREE.SphereGeometry(1.7,8,5,0,Math.PI*2,0,Math.PI*.5),
     new THREE.MeshStandardMaterial({color:0x223355,roughness:.1,transparent:true,opacity:.55}),0,3,0);
   add(g,new THREE.CylinderGeometry(2.6,2.6,.06,12),
@@ -4092,7 +4137,7 @@ function buildScifiArtifacts(){
 
   // ── 11. T-800 TERMINATOR ────────────────────────────────────────
   {const g=new THREE.Group();
-  const cr=M(0x888888,.08,.95);
+  const cr=new THREE.MeshStandardMaterial({color:0xd0d0d0,roughness:.05,metalness:1.0,envMapIntensity:1.5});
   const skull=add(g,new THREE.SphereGeometry(.62,8,7),cr,0,8,0);skull.scale.set(1,.88,1.12);
   add(g,new THREE.BoxGeometry(.9,.28,.75),cr,0,7.1,.1);
   for(let xe of[-.22,.22])add(g,new THREE.SphereGeometry(.11,5,4),
@@ -4121,7 +4166,7 @@ function buildScifiArtifacts(){
 
   // ── 13. SENTINEL (MATRIX) ───────────────────────────────────────
   {const g=new THREE.Group();
-  const body=add(g,new THREE.SphereGeometry(1.2,8,8),M(0x111111,.3,.9),0,2.5,0);body.scale.y=1.55;
+  const body=add(g,new THREE.SphereGeometry(1.2,8,8),new THREE.MeshStandardMaterial({color:0x0c0c0c,roughness:.08,metalness:1.0,envMapIntensity:1.4}),0,2.5,0);body.scale.y=1.55;
   add(g,new THREE.SphereGeometry(.28,6,5),
     new THREE.MeshBasicMaterial({color:0xff0000,transparent:true,opacity:.9,blending:THREE.AdditiveBlending}),0,3,.95);
   const pl=new THREE.PointLight(0xff0000,2.5,9);pl.position.y=3;g.add(pl);
@@ -4133,7 +4178,7 @@ function buildScifiArtifacts(){
 
   // ── 14. K-2SO PARTS ─────────────────────────────────────────────
   {const g=new THREE.Group();
-  const dk=M(0x1a1a1a,.4,.88);
+  const dk=new THREE.MeshStandardMaterial({color:0x222222,roughness:.25,metalness:.95,envMapIntensity:1.1});
   const head=add(g,new THREE.SphereGeometry(.62,7,6),dk,0,.45,0);head.scale.set(1.12,1.35,1);head.rotation.z=.85;
   add(g,new THREE.BoxGeometry(1.1,.9,1.6),dk,1.6,.35,1);
   add(g,new THREE.CylinderGeometry(.19,.19,2.6,6),dk,-1.6,.22,-.5,0,0,.95);
@@ -4145,8 +4190,8 @@ function buildScifiArtifacts(){
 
   // ── 15. LIGHTSABER IN THE GROUND ────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.CylinderGeometry(.13,.16,1.8,8),M(0x666666,.18,.98),0,.9,0);
-  add(g,new THREE.CylinderGeometry(.14,.11,.35,8),M(0x888888,.1,.99),0,1.85,0);
+  add(g,new THREE.CylinderGeometry(.13,.16,1.8,8),new THREE.MeshStandardMaterial({color:0xcccccc,roughness:.08,metalness:1.0,envMapIntensity:1.5}),0,.9,0);
+  add(g,new THREE.CylinderGeometry(.14,.11,.35,8),new THREE.MeshStandardMaterial({color:0xe0e0e0,roughness:.04,metalness:1.0,envMapIntensity:1.5}),0,1.85,0);
   add(g,new THREE.CylinderGeometry(.04,.07,5.5,6),glow(0x00ffff,.92),0,4.8,0);
   add(g,new THREE.CylinderGeometry(.14,.2,5.5,6),glow(0x00aaff,.28),0,4.8,0);
   const pl=new THREE.PointLight(0x00ccff,5,18);pl.position.y=5;g.add(pl);
@@ -4155,7 +4200,7 @@ function buildScifiArtifacts(){
 
   // ── 16. NEURALYZER ──────────────────────────────────────────────
   {const g=new THREE.Group();
-  const chrome=new THREE.MeshStandardMaterial({color:0xcccccc,roughness:.04,metalness:.99});
+  const chrome=new THREE.MeshStandardMaterial({color:0xe0e0e0,roughness:.02,metalness:1.0,envMapIntensity:1.6});
   add(g,new THREE.CylinderGeometry(.22,.26,2.2,10),chrome,0,1.1,0);
   add(g,new THREE.SphereGeometry(.22,8,6,0,Math.PI*2,0,Math.PI*.5),chrome,0,2.32,0);
   add(g,new THREE.SphereGeometry(.08,5,4),new THREE.MeshBasicMaterial({color:0xffffff}),0,2.4,0);
@@ -4166,9 +4211,9 @@ function buildScifiArtifacts(){
   // ── 17. POWER ORB ────────────────────────────────────────────────
   {const g=new THREE.Group();
   for(let i=0;i<8;i++){const a=i/8*Math.PI*2;
-    const bar=add(g,new THREE.CylinderGeometry(.1,.1,2,4),M(0x222222,.3,.9),Math.cos(a)*1.7,1.5,Math.sin(a)*1.7);
+    const bar=add(g,new THREE.CylinderGeometry(.1,.1,2,4),new THREE.MeshStandardMaterial({color:0xb87333,roughness:.25,metalness:.96,envMapIntensity:1.2}),Math.cos(a)*1.7,1.5,Math.sin(a)*1.7);
     bar.rotation.z=Math.PI/2;bar.rotation.x=a+Math.PI/2;}
-  for(let y of[.45,2.55])add(g,new THREE.TorusGeometry(1.7,.13,5,16),M(0x333333,.3,.9),0,y,0,Math.PI/2);
+  for(let y of[.45,2.55])add(g,new THREE.TorusGeometry(1.7,.13,5,16),new THREE.MeshStandardMaterial({color:0xc77f50,roughness:.22,metalness:.97,envMapIntensity:1.2}),0,y,0,Math.PI/2);
   add(g,new THREE.SphereGeometry(.92,10,8),glow(0xaa00dd,.9),0,1.5,0);
   add(g,new THREE.SphereGeometry(.58,8,6),glow(0xff66ff,.75),0,1.5,0);
   const pl=new THREE.PointLight(0xaa00ff,5.5,22);pl.position.y=1.5;g.add(pl);
@@ -4178,7 +4223,7 @@ function buildScifiArtifacts(){
   // ── 18. ANNIHILATION SPHERE ──────────────────────────────────────
   {const g=new THREE.Group();
   add(g,new THREE.SphereGeometry(3,14,12),
-    new THREE.MeshPhysicalMaterial({color:0x888899,roughness:0,metalness:.92}),0,2,0);
+    new THREE.MeshPhysicalMaterial({color:0xd0d0d0,roughness:0,metalness:1.0,envMapIntensity:1.6,clearcoat:.5}),0,2,0);
   for(let i=0;i<3;i++)
     add(g,new THREE.TorusGeometry(3.6+i*.5,.09,5,28),glow(0x88aaff,.5-.1*i),0,2,0,i*.5,i*.8,i*.3);
   const pl=new THREE.PointLight(0x4488ff,2.5,22);pl.position.y=2;g.add(pl);
@@ -4187,9 +4232,9 @@ function buildScifiArtifacts(){
 
   // ── 19. ANCIENT STARGATE ─────────────────────────────────────────
   {const g=new THREE.Group();
-  add(g,new THREE.TorusGeometry(7,.95,12,52),M(0x998877,.95,.04));
+  add(g,new THREE.TorusGeometry(7,.95,12,52),new THREE.MeshStandardMaterial({color:0xd4af37,roughness:.45,metalness:.95,envMapIntensity:1.1}));
   for(let i=0;i<9;i++){const a=i/9*Math.PI*2;
-    add(g,new THREE.BoxGeometry(.58,.95,.65),M(0x776655,.95,.04,0x665544,.12),Math.cos(a)*7.3,Math.sin(a)*7.3,.1);}
+    add(g,new THREE.BoxGeometry(.58,.95,.65),new THREE.MeshStandardMaterial({color:0xffd700,roughness:.25,metalness:1.0,emissive:0x442200,emissiveIntensity:.18,envMapIntensity:1.3}),Math.cos(a)*7.3,Math.sin(a)*7.3,.1);}
   add(g,new THREE.CircleGeometry(6.3,32),
     new THREE.MeshBasicMaterial({color:0x223344,transparent:true,opacity:.25,side:THREE.DoubleSide}));
   g.rotation.x=.12;
