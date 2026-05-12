@@ -468,21 +468,50 @@ function buildWorld(){
   sunLight=new THREE.DirectionalLight(0xffe8cc,1.6);
   sunLight.position.set(320, 480, -260).normalize().multiplyScalar(600);
   scene.add(sunLight);
-  // Sun sprite — always at the directional light's direction, very far away
-  const sunSpriteMat=new THREE.SpriteMaterial({
-    color:0xfff5cc,transparent:true,opacity:1.0,
-    blending:THREE.AdditiveBlending,depthWrite:false
-  });
-  const sunSprite=new THREE.Sprite(sunSpriteMat);
-  sunSprite.scale.setScalar(120); // large enough to read as a disc in VR
-  sunSprite.position.copy(sunLight.position.clone().normalize().multiplyScalar(2800));
-  scene.add(sunSprite);
-  // Soft glow halo behind the disc
-  const halMat=new THREE.SpriteMaterial({color:0xffdd88,transparent:true,opacity:.35,blending:THREE.AdditiveBlending,depthWrite:false});
-  const sunHalo=new THREE.Sprite(halMat);
-  sunHalo.scale.setScalar(320);
-  sunHalo.position.copy(sunSprite.position);
-  scene.add(sunHalo);
+  // ── Sun sprite — circular disc with radial gradient ─────────────
+  // Draw on a canvas so the sun appears as a proper round glowing ball,
+  // not a rectangle.  Two layered sprites: inner disc + outer corona.
+  const sunPos=sunLight.position.clone().normalize().multiplyScalar(2800);
+
+  // Inner disc: white-hot core → yellow → orange → transparent edge
+  (function(){
+    const sz=256;
+    const c=document.createElement('canvas');c.width=c.height=sz;
+    const cx=c.getContext('2d');
+    const g=cx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+    g.addColorStop(0.00,'rgba(255,255,240,1.00)'); // white-hot core
+    g.addColorStop(0.18,'rgba(255,248,200,1.00)'); // warm white
+    g.addColorStop(0.42,'rgba(255,220,120,0.95)'); // yellow
+    g.addColorStop(0.68,'rgba(255,160, 40,0.60)'); // orange glow
+    g.addColorStop(0.88,'rgba(255,100, 10,0.15)'); // deep orange
+    g.addColorStop(1.00,'rgba(255, 80,  0,0.00)'); // transparent
+    cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
+    const tex=new THREE.CanvasTexture(c);
+    const mat=new THREE.SpriteMaterial({map:tex,transparent:true,
+      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
+    const sp=new THREE.Sprite(mat);
+    sp.scale.setScalar(140);sp.position.copy(sunPos);
+    sp.renderOrder=999;scene.add(sp);
+  })();
+
+  // Outer corona halo: soft radial glow much larger than the disc
+  (function(){
+    const sz=128;
+    const c=document.createElement('canvas');c.width=c.height=sz;
+    const cx=c.getContext('2d');
+    const g=cx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+    g.addColorStop(0.00,'rgba(255,220,120,0.45)');
+    g.addColorStop(0.35,'rgba(255,180, 60,0.20)');
+    g.addColorStop(0.70,'rgba(255,120, 20,0.07)');
+    g.addColorStop(1.00,'rgba(255, 80,  0,0.00)');
+    cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
+    const tex=new THREE.CanvasTexture(c);
+    const mat=new THREE.SpriteMaterial({map:tex,transparent:true,
+      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
+    const sp=new THREE.Sprite(mat);
+    sp.scale.setScalar(420);sp.position.copy(sunPos);
+    sp.renderOrder=998;scene.add(sp);
+  })();
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
 }
 
@@ -610,13 +639,20 @@ function buildVolcanoes(){
     {dir:new THREE.Vector3(-0.55, 0.78, -0.30).normalize(), h:70, r:55},
     {dir:new THREE.Vector3( 0.42, 0.86,  0.28).normalize(), h:40, r:32},
     {dir:new THREE.Vector3(-0.35, 0.72,  0.59).normalize(), h:55, r:42},
-    // Mid-latitudes and equator (6 new)
+    // Mid-latitudes and equator (6)
     {dir:new THREE.Vector3( 0.70, 0.55,  0.45).normalize(), h:48, r:38},
     {dir:new THREE.Vector3(-0.62, 0.50, -0.60).normalize(), h:62, r:50},
     {dir:new THREE.Vector3( 0.20, 0.60, -0.77).normalize(), h:35, r:28},
     {dir:new THREE.Vector3(-0.80, 0.30,  0.52).normalize(), h:58, r:44},
     {dir:new THREE.Vector3( 0.65,-0.40,  0.65).normalize(), h:45, r:36},
     {dir:new THREE.Vector3(-0.30, 0.20, -0.93).normalize(), h:72, r:58},
+    // 6 new — open southern / equatorial zones
+    {dir:new THREE.Vector3( 0.35,-0.62,  0.70).normalize(), h:52, r:40}, // south equatorial east
+    {dir:new THREE.Vector3(-0.55,-0.60,  0.58).normalize(), h:44, r:34}, // south-southwest
+    {dir:new THREE.Vector3( 0.62,-0.45, -0.65).normalize(), h:60, r:48}, // south-east negative-z
+    {dir:new THREE.Vector3(-0.22,-0.72, -0.66).normalize(), h:38, r:30}, // deep south negative-z
+    {dir:new THREE.Vector3( 0.90,-0.18,  0.40).normalize(), h:50, r:40}, // east equatorial
+    {dir:new THREE.Vector3(-0.85,-0.14, -0.50).normalize(), h:66, r:52}, // west-southwest equatorial
   ];
   const volcMat2=volcMat.clone();
   vDefs.forEach(v=>{
@@ -2141,6 +2177,12 @@ const VOLCANO_POSITIONS=[
   {dir:new THREE.Vector3(-0.80, 0.30,  0.52).normalize(), h:58},
   {dir:new THREE.Vector3( 0.65,-0.40,  0.65).normalize(), h:45},
   {dir:new THREE.Vector3(-0.30, 0.20, -0.93).normalize(), h:72},
+  {dir:new THREE.Vector3( 0.35,-0.62,  0.70).normalize(), h:52},
+  {dir:new THREE.Vector3(-0.55,-0.60,  0.58).normalize(), h:44},
+  {dir:new THREE.Vector3( 0.62,-0.45, -0.65).normalize(), h:60},
+  {dir:new THREE.Vector3(-0.22,-0.72, -0.66).normalize(), h:38},
+  {dir:new THREE.Vector3( 0.90,-0.18,  0.40).normalize(), h:50},
+  {dir:new THREE.Vector3(-0.85,-0.14, -0.50).normalize(), h:66},
 ];
 let volcanoNodes=[];
 
