@@ -119,6 +119,8 @@ const SHIELD_DUR=3.0, SHIELD_RECHARGE=10.0;
 let weaponCondition={}; // type → 0..100
 // ── Day/night cycle ──────────────────────────────────────────────
 let sunLight=null, ambientLight=null;
+let flareItems=[], _flareOpacity=0;
+const _flareSunPos=new THREE.Vector3(320,480,-260).normalize().multiplyScalar(2800);
 // ── Spatial audio tracks ─────────────────────────────────────────
 let enemyHumNodes={};  // enemyId → {osc,gain,pan}
 let musicNodes=null;
@@ -141,6 +143,8 @@ let pyramidColliders=[]; // [{basePos,axis,r,h,baseR}] — same format used by c
 
 // ── Input state ────────────────────────────────────────────────────────
 let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false;
+// Per-hand controller profile: 'standard' | 'trackpad' | 'index' | 'hand' | 'auto'
+const _ctrlProfile={left:'auto',right:'auto'};
 // ── Dash state ────────────────────────────────────────────────────
 let dashActive=false, dashRemaining=0, dashCooldown=0;
 const DASH_SPEED=50;    // units/s (covers 10 m in 0.2 s)
@@ -488,10 +492,10 @@ function buildWorld(){
     cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
     const tex=new THREE.CanvasTexture(c);
     const mat=new THREE.SpriteMaterial({map:tex,transparent:true,
-      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
+      blending:THREE.AdditiveBlending,depthWrite:false});
     const sp=new THREE.Sprite(mat);
     sp.scale.setScalar(140);sp.position.copy(sunPos);
-    sp.renderOrder=999;scene.add(sp);
+    scene.add(sp);
   })();
 
   // Outer corona halo: soft radial glow much larger than the disc
@@ -507,13 +511,151 @@ function buildWorld(){
     cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
     const tex=new THREE.CanvasTexture(c);
     const mat=new THREE.SpriteMaterial({map:tex,transparent:true,
-      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
+      blending:THREE.AdditiveBlending,depthWrite:false});
     const sp=new THREE.Sprite(mat);
     sp.scale.setScalar(420);sp.position.copy(sunPos);
-    sp.renderOrder=998;scene.add(sp);
+    scene.add(sp);
   })();
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
+  buildLensFlare();
 }
+
+// ── LENS FLARE SYSTEM ─────────────────────────────────────────────────────
+function mkFlareTex(size,drawFn){
+  const c=document.createElement('canvas');c.width=c.height=size;
+  drawFn(c.getContext('2d'),size);return new THREE.CanvasTexture(c);
+}
+function buildLensFlare(){
+  const defs=[
+    // ① CORONA — enormous soft radial glow centred on the sun (t=0)
+    {t:0.00,sz:560,baseOp:0.60,tex:mkFlareTex(256,(ctx,s)=>{
+      const g=ctx.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+      g.addColorStop(0.00,'rgba(255,255,235,0.90)');
+      g.addColorStop(0.12,'rgba(255,235,160,0.60)');
+      g.addColorStop(0.32,'rgba(255,180, 60,0.22)');
+      g.addColorStop(0.60,'rgba(255,110,  0,0.07)');
+      g.addColorStop(1.00,'rgba(255, 70,  0,0.00)');
+      ctx.fillStyle=g;ctx.fillRect(0,0,s,s);
+    })},
+    // ② STARBURST — 12-point diffraction spikes (t=0, layered over corona)
+    {t:0.00,sz:360,baseOp:0.50,tex:mkFlareTex(512,(ctx,s)=>{
+      const cx=s/2,cy=s/2;ctx.clearRect(0,0,s,s);
+      for(let i=0;i<12;i++){
+        const a=i*Math.PI/6;
+        const len=(i%2===0)?s*0.47:s*0.29;
+        const hw=0.020;
+        const g=ctx.createLinearGradient(cx,cy,cx+Math.cos(a)*len,cy+Math.sin(a)*len);
+        g.addColorStop(0.00,'rgba(255,255,220,1.0)');
+        g.addColorStop(0.12,'rgba(255,245,170,0.65)');
+        g.addColorStop(0.45,'rgba(255,210, 90,0.22)');
+        g.addColorStop(1.00,'rgba(255,170, 20,0.00)');
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(cx+Math.cos(a-hw)*len*1.1,cy+Math.sin(a-hw)*len*1.1);
+        ctx.lineTo(cx+Math.cos(a)*len,cy+Math.sin(a)*len);
+        ctx.lineTo(cx+Math.cos(a+hw)*len*1.1,cy+Math.sin(a+hw)*len*1.1);
+        ctx.closePath();ctx.fillStyle=g;ctx.fill();
+      }
+    })},
+    // ③ AIRY DISK — concentric rainbow diffraction rings (t=0.16)
+    {t:0.16,sz:210,baseOp:0.48,tex:mkFlareTex(256,(ctx,s)=>{
+      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2;
+      [[0.18,'rgba(255, 90, 70,'],[0.30,'rgba(255,215, 50,'],[0.42,'rgba( 60,230, 80,'],
+       [0.54,'rgba( 55,140,255,'],[0.65,'rgba(185, 55,255,']].forEach(([r,col])=>{
+        const rad=r*s/2;
+        const g=ctx.createRadialGradient(cx,cy,rad-7,cx,cy,rad+7);
+        g.addColorStop(0,col+'0)');g.addColorStop(0.5,col+'0.55)');g.addColorStop(1,col+'0)');
+        ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);
+        ctx.lineWidth=14;ctx.strokeStyle=g;ctx.stroke();
+      });
+    })},
+    // ④ HEXAGONAL APERTURE GHOST — blue-tinted lens bokeh (t=0.56)
+    {t:0.56,sz:150,baseOp:0.40,tex:mkFlareTex(256,(ctx,s)=>{
+      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.42;
+      function hexPath(rad){
+        ctx.beginPath();
+        for(let i=0;i<6;i++){const a=i*Math.PI/3+Math.PI/6;
+          i===0?ctx.moveTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a))
+               :ctx.lineTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a));}
+        ctx.closePath();
+      }
+      hexPath(r);
+      const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+      g.addColorStop(0.00,'rgba(170,225,255,0.55)');g.addColorStop(0.55,'rgba( 75,160,255,0.25)');
+      g.addColorStop(0.88,'rgba( 35, 75,200,0.12)');g.addColorStop(1.00,'rgba( 15, 35,160,0.00)');
+      ctx.fillStyle=g;ctx.fill();
+      hexPath(r);ctx.strokeStyle='rgba(190,235,255,0.65)';ctx.lineWidth=5;ctx.stroke();
+      hexPath(r*0.55);ctx.strokeStyle='rgba(110,185,255,0.30)';ctx.lineWidth=2;ctx.stroke();
+    })},
+    // ⑤ CHROMATIC ABERRATION ORB — RGB-split glowing ring (t=0.88)
+    {t:0.88,sz:100,baseOp:0.46,tex:mkFlareTex(256,(ctx,s)=>{
+      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.36;
+      [[255,55,55,-9],[55,255,85,0],[55,105,255,9]].forEach(([R,G,B,dx])=>{
+        const g=ctx.createRadialGradient(cx+dx,cy,r*0.52,cx+dx,cy,r);
+        g.addColorStop(0.00,`rgba(${R},${G},${B},0)`);
+        g.addColorStop(0.60,`rgba(${R},${G},${B},0.12)`);
+        g.addColorStop(0.85,`rgba(${R},${G},${B},0.48)`);
+        g.addColorStop(1.00,`rgba(${R},${G},${B},0)`);
+        ctx.beginPath();ctx.arc(cx+dx,cy,r,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+      });
+    })},
+    // ⑥ SPECTRAL GHOST — iridescent ring on the far side opposite the sun (t=1.55)
+    {t:1.55,sz:80,baseOp:0.50,tex:mkFlareTex(256,(ctx,s)=>{
+      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.38;
+      const g=ctx.createRadialGradient(cx,cy,r*0.54,cx,cy,r);
+      g.addColorStop(0.00,'rgba(255,255,255,0)');
+      g.addColorStop(0.48,'rgba(165, 55,255,0.14)');
+      g.addColorStop(0.80,'rgba( 55,205,255,0.52)');
+      g.addColorStop(0.93,'rgba(255, 75,145,0.28)');
+      g.addColorStop(1.00,'rgba(255, 75,145,0.00)');
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+      const g2=ctx.createRadialGradient(cx,cy,0,cx,cy,r*0.50);
+      g2.addColorStop(0.00,'rgba(225,185,255,0.32)');
+      g2.addColorStop(0.65,'rgba(145, 80,225,0.12)');
+      g2.addColorStop(1.00,'rgba( 80, 40,185,0.00)');
+      ctx.beginPath();ctx.arc(cx,cy,r*0.50,0,Math.PI*2);ctx.fillStyle=g2;ctx.fill();
+    })},
+  ];
+  defs.forEach(d=>{
+    const mat=new THREE.SpriteMaterial({map:d.tex,transparent:true,
+      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
+    const sp=new THREE.Sprite(mat);sp.visible=false;scene.add(sp);
+    flareItems.push({...d,mat,sp});
+  });
+}
+
+function updateLensFlare(){
+  if(!flareItems.length)return;
+  const cam=renderer.xr.isPresenting?renderer.xr.getCamera():camera;
+  const camPos=new THREE.Vector3();cam.getWorldPosition(camPos);
+  const camDir=new THREE.Vector3();cam.getWorldDirection(camDir);
+  const toSun=_flareSunPos.clone().sub(camPos).normalize();
+  // Analytical ray–planet-sphere occlusion test
+  const b=2*camPos.dot(toSun);
+  const c2=camPos.dot(camPos)-(PLANET_R+10)*(PLANET_R+10);
+  const disc=b*b-4*c2;
+  const occluded=disc>0&&(-b-Math.sqrt(disc))*0.5>1.0;
+  const sunDot=camDir.dot(toSun);
+  let target=(!occluded&&sunDot>0)?Math.sqrt(Math.max(0,(sunDot-0.15)/0.85)):0;
+  const sunNDC=_flareSunPos.clone().project(cam);
+  if(target>0){
+    const ed=Math.max(Math.abs(sunNDC.x),Math.abs(sunNDC.y));
+    target*=Math.max(0,1.0-Math.pow(Math.max(0,ed-0.55)/0.55,1.5));
+  }
+  _flareOpacity+=((target-_flareOpacity)*0.06);
+  if(_flareOpacity<0.004){flareItems.forEach(f=>f.sp.visible=false);return;}
+  const DIST=80;
+  flareItems.forEach(item=>{
+    item.sp.visible=true;
+    const fx=sunNDC.x*(1-item.t), fy=sunNDC.y*(1-item.t);
+    const ndc3=new THREE.Vector3(fx,fy,0.50).unproject(cam);
+    ndc3.sub(camPos).normalize();
+    item.sp.position.copy(camPos).addScaledVector(ndc3,DIST);
+    item.sp.scale.setScalar(item.sz*DIST/3000);
+    item.mat.opacity=_flareOpacity*item.baseOp;
+  });
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function buildStarfield(){
   // Main field — 10 k stars (Quest 3 budget)
@@ -919,6 +1061,87 @@ function buildDamageFlash(){
 // ════════════════════════════════════════════════════════════════
 //  CONTROLLERS  — handedness-aware assignment
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+//  MULTI-HEADSET CONTROLLER ABSTRACTION
+//  Detects controller type from XRInputSource.profiles and routes
+//  axis / button reads appropriately for each headset family.
+//
+//  Supported:
+//    Meta Quest 2 / 3 / 3S  — 'standard'  (Touch controllers, thumbstick at axes[2/3])
+//    PICO 4                  — 'standard'  (PICO controllers, identical xr-standard layout)
+//    Sony PSVR2              — 'standard'  (Sense controllers, xr-standard mapping)
+//    Valve Index             — 'index'     (Knuckle controllers, trackpad[0/1]+thumbstick[2/3])
+//    HTC Vive Pro 2 / Wand   — 'trackpad'  (trackpad only at axes[0/1], no face buttons)
+//    HTC Vive Focus / Cosmos — 'trackpad'
+//    Windows Mixed Reality   — 'wmr'       (trackpad[0/1] + thumbstick[2/3], face buttons ok)
+//    Apple Vision Pro        — 'hand'      (hand-tracking, pinch fires selectstart)
+//    SteamVR / generic       — 'auto'      (tries both axis sets, guesses buttons)
+// ════════════════════════════════════════════════════════════════
+
+// Profile keyword → internal type table (checked against full profiles string)
+const _PROFILE_TABLE = [
+  [/htc-vive-controller/,         'trackpad'],
+  [/htc-vive-focus/,              'trackpad'],
+  [/htc-cosmos/,                  'trackpad'],
+  [/valve-index/,                 'index'   ],
+  [/windows-mixed-reality/,       'wmr'     ],
+  [/oculus-touch/,                'standard'],
+  [/pico-neo|pico-4|pico4/,       'standard'],
+  [/playstation-dualshock|dualsense|psvr/,'standard'],
+  [/samsung-odyssey/,             'standard'],
+  [/generic-trigger-squeeze-thumbstick/,'standard'],
+  [/generic-trigger-squeeze-touchpad/, 'trackpad'],
+];
+
+function detectCtrlProfile(inputSource){
+  if(inputSource.hand) return 'hand';
+  const p=(inputSource.profiles||[]).join(' ').toLowerCase();
+  for(const[rx,type] of _PROFILE_TABLE) if(rx.test(p)) return type;
+  return 'auto';
+}
+
+// Returns {x, y} for the primary locomotion / rotation stick.
+// On trackpad-only headsets this is axes[0/1]; on everything else it's
+// axes[2/3] (thumbstick) with a fallback to axes[0/1] when [2/3] are idle.
+function ctrlAxes(gp, handedness){
+  const ax=gp.axes, prof=_ctrlProfile[handedness];
+  if(prof==='trackpad'){
+    return {x:ax[0]||0, y:ax[1]||0};
+  }
+  // standard / index / wmr / auto: prefer thumbstick [2/3]
+  const tx=ax[2]||0, ty=ax[3]||0;
+  if(Math.abs(tx)>0.04||Math.abs(ty)>0.04) return {x:tx,y:ty};
+  // fallback: some SteamVR-wrapped controllers put thumbstick at [0/1]
+  return {x:ax[0]||0, y:ax[1]||0};
+}
+
+// Returns a button state with .pressed and .value, never throws.
+// action: 'grip' | 'primary' | 'secondary' | 'menu' | 'thumbstick'
+function ctrlBtn(gp, handedness, action){
+  const b=gp.buttons, prof=_ctrlProfile[handedness];
+  const safe=(i)=>b[i]??{pressed:false,touched:false,value:0};
+  switch(action){
+    case 'grip':
+      return safe(1); // squeeze — same on all headsets
+    case 'thumbstick':
+      // Vive: touchpad-click is [2]; standard: thumbstick click is [3]
+      return prof==='trackpad' ? safe(2) : safe(3);
+    case 'primary':
+      // A (right) / X (left) on Quest/Index/PSVR2/PICO
+      // Vive has no face buttons → re-map touchpad click
+      // WMR has face buttons at [4]
+      return prof==='trackpad' ? safe(2) : safe(4);
+    case 'secondary':
+      // B (right) / Y (left) — not present on Vive/trackpad headsets
+      if(prof==='trackpad') return {pressed:false,touched:false,value:0};
+      return safe(5);
+    case 'menu':
+      // Vive menu button is at [3]; WMR/generic may expose it at [3] or [4]
+      return prof==='trackpad'||prof==='wmr' ? safe(3) : safe(5);
+  }
+  return {pressed:false,touched:false,value:0};
+}
+
 function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl=renderer.xr.getController(i);
@@ -927,6 +1150,7 @@ function buildControllers(){
 
     ctrl.addEventListener('connected',e=>{
       const hand=e.data.handedness;
+      _ctrlProfile[hand]=detectCtrlProfile(e.data); // ← profile detection
       if(hand==='right'){ rightCtrl=ctrl;rightGrip=grip;rightXRSource=e.data;onRightConnected();
         // Confirmation buzz — confirms haptics are alive the moment you pick up the controller
         setTimeout(()=>pulseSource(rightXRSource,1.0,200),200);
@@ -1058,17 +1282,17 @@ function setupXRButton(){
   const btn=document.getElementById('vr-btn');
   if(!navigator.xr){
     btn.textContent='WebXR Not Supported';
-    setStatus('Open in Meta Quest Browser or a WebXR-enabled browser.');
+    setStatus('Open in the Meta Quest Browser, PICO Browser, or a WebXR-capable PC browser (Chrome + SteamVR).');
     return;
   }
   navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
     if(ok){
       btn.textContent='ENTER VR';btn.disabled=false;
       btn.onclick=enterVR;
-      setStatus('Quest 3 / Quest Pro ready.');
+      setStatus('Headset ready — Meta Quest 2/3/3S · PICO 4 · PSVR2 · Valve Index · HTC Vive · Apple Vision Pro · WMR');
     }else{
       btn.textContent='VR Not Available';
-      setStatus('No VR headset detected or browser lacks WebXR support.');
+      setStatus('No VR headset detected. Connect a headset and refresh, or open in your headset\'s browser.');
     }
   }).catch(e=>{
     btn.textContent='VR Check Failed';
@@ -1615,15 +1839,25 @@ function updatePlayer(dt){
   let moveX=0,moveZ=0;
 
   for(const src of session.inputSources){
-    if(!src.gamepad)continue;
-    const gp=src.gamepad,ax=gp.axes;
+    // Hand-tracking sources (Apple Vision Pro, etc.) have no gamepad axes.
+    // Fire / weapon actions are handled via selectstart which still fires for pinch.
+    // Sprint / jump / dash are unavailable on pure hand-tracking — skip gracefully.
+    if(!src.gamepad) continue;
+    const gp=src.gamepad;
+    const hand=src.handedness;
 
-    if(src.handedness==='left'){
-      if(Math.abs(ax[2])>.15)moveX=ax[2];
-      if(Math.abs(ax[3])>.15)moveZ=ax[3];
-      leftGripHeld=gp.buttons[1]?.pressed??false;
-      // X button (left controller, index 4): cycle weapons in order 1-10
-      const xNow=gp.buttons[4]?.pressed??false;
+    if(hand==='left'){
+      // ── Locomotion stick (thumbstick OR trackpad depending on headset) ──
+      const {x,y}=ctrlAxes(gp,hand);
+      const DZ=0.14; // dead zone applied consistently for all headsets
+      if(Math.abs(x)>DZ) moveX=x;
+      if(Math.abs(y)>DZ) moveZ=y;
+
+      // Grip = sprint (works on every headset that has a grip button)
+      leftGripHeld=ctrlBtn(gp,hand,'grip').pressed;
+
+      // Primary face button (X on Quest, touchpad-click on Vive) → cycle weapons
+      const xNow=ctrlBtn(gp,hand,'primary').pressed;
       if(xNow&&!xWasPressed){
         currentWeaponIndex=(currentWeaponIndex+1)%WEAPONS_ORDER.length;
         const nextType=WEAPONS_ORDER[currentWeaponIndex];
@@ -1633,33 +1867,32 @@ function updatePlayer(dt){
       xWasPressed=xNow;
     }
 
-    if(src.handedness==='right'){
-      // Right thumbstick X: snap turn 45° around the surface normal (planet local up)
-      if(snapCooldown<=0&&Math.abs(ax[2])>.65){
-        // On a spherical planet the dolly's local +Y IS the surface normal.
-        // Rotating around world Y would mis-turn when the dolly is tilted.
-        // We pre-multiply a quaternion that spins around the current surface normal.
+    if(hand==='right'){
+      // ── Snap turn — right stick/trackpad X axis ──────────────────────
+      const {x:turnX}=ctrlAxes(gp,hand);
+      const TURN_DZ=_ctrlProfile[hand]==='trackpad'?0.40:0.65; // trackpads need lighter touch
+      if(snapCooldown<=0&&Math.abs(turnX)>TURN_DZ){
         const surfNorm=dolly.position.clone().normalize();
         const snapQ=new THREE.Quaternion()
-          .setFromAxisAngle(surfNorm,-Math.sign(ax[2])*SENS_SNAP);
+          .setFromAxisAngle(surfNorm,-Math.sign(turnX)*SENS_SNAP);
         dolly.quaternion.premultiply(snapQ);
         snapCooldown=.38;
       }
-      // A button (index 4): super jump
-      const aNow=gp.buttons[4]?.pressed??false;
+
+      // Primary face button (A on Quest/Index/PSVR2/PICO, touchpad-click on Vive) → jump
+      const aNow=ctrlBtn(gp,hand,'primary').pressed;
       if(aNow&&!aWasPressed&&isGrounded){
-        playerVY=JUMP_VEL; // radial launch velocity (away from planet centre)
+        playerVY=JUMP_VEL;
         isGrounded=false;
         haptic('right',1.0,120);haptic('left',0.8,100);
         drawHUD();
       }
       aWasPressed=aNow;
 
-      // B button (index 5): 10-metre forward dash
-      // Dash stops early if an enemy is within DASH_STOP_R metres ahead.
-      const bNow=gp.buttons[5]?.pressed??false;
+      // Secondary face button (B on Quest/Index/PSVR2/PICO) → dash forward
+      // Vive has no B equivalent — dash simply unavailable on that hardware.
+      const bNow=ctrlBtn(gp,hand,'secondary').pressed;
       if(bNow&&!bWasPressed&&!dashActive&&dashCooldown<=0&&gameActive){
-        // Dash in camera-forward direction, projected onto sphere tangent plane
         const sN=dolly.position.clone().normalize();
         camera.getWorldDirection(_dashDir);
         _dashDir.addScaledVector(sN,-_dashDir.dot(sN));
@@ -4070,7 +4303,7 @@ function buildScifiArtifacts(){
   {const g=new THREE.Group();
   add(g,new THREE.BoxGeometry(1.5,9,4),new THREE.MeshStandardMaterial(
     {color:0x0a0a0a,roughness:.04,metalness:1.0,emissive:0x050505,emissiveIntensity:.5,envMapIntensity:1.4}),0,4.5,0);
-  artL(g,.70,.50,.51, 3,
+  artL(g,.07,.91,.42, 3,
     new THREE.BoxGeometry(2,9,4.5), 0x050505, 4.5);}
 
   // ── 2. XENOMORPH EGG ────────────────────────────────────────────
@@ -4083,7 +4316,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.SphereGeometry(.5,6,6),glow(0x88ff33,.7),0,2.6,0);
   const pl=new THREE.PointLight(0x66ff22,2.5,9);pl.position.y=2.8;g.add(pl);
   const eggLod=new THREE.SphereGeometry(2,5,4);
-  artL(g,.82,.28,.50, 2.5, eggLod, 0x0d0800, 2);}
+  artL(g,-.42,.91,.04, 2.5, eggLod, 0x0d0800, 2);}
 
   // ── 3. ENGINEER DERELICT SHIP ───────────────────────────────────
   {const g=new THREE.Group();
@@ -4091,7 +4324,7 @@ function buildScifiArtifacts(){
   hull.rotation.x=Math.PI/2;g.add(hull);
   add(g,new THREE.CylinderGeometry(1.5,2.5,6,6),M(0x181612,.85,.3),0,-2.5,14);
   g.rotation.z=.25;
-  artL(g,.20,.50,-.86, 15,
+  artL(g,-.07,.91,-.42, 15,
     new THREE.TorusGeometry(14,3.5,5,10,Math.PI*1.35), 0x1a1810, 5, 6);}
 
   // ── 4. TRIPOD WAR MACHINE ───────────────────────────────────────
@@ -4104,7 +4337,7 @@ function buildScifiArtifacts(){
     leg.rotation.z=-Math.cos(a)*.38;leg.rotation.x=Math.sin(a)*.38;
     add(g,new THREE.SphereGeometry(.9,5,4),M(0x1a1a1a,.5,.8),Math.cos(a)*10.5,.3,Math.sin(a)*10.5);}
   add(g,new THREE.CylinderGeometry(.1,.1,3.5,5),M(0x331100,.4,.7,0xff3300,2.5),0,13,2.8,.15);
-  artL(g,-.30,.50,-.82, 11,
+  artL(g,.42,.91,-.07, 11,
     new THREE.ConeGeometry(8,16,3), 0x2a2a2a, 8);}
 
   // ── 5. PROTOMOLECULE ────────────────────────────────────────────
@@ -4118,7 +4351,7 @@ function buildScifiArtifacts(){
       dx*len*.5,dy*len*.5+1.5,dz*len*.5);
     t.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(dx,dy,dz).normalize());}
   const pl=new THREE.PointLight(0x0088ff,5,22);pl.position.y=1.5;g.add(pl);
-  artL(g,.00,.65,-.76, 8,
+  artL(g,.00,.57,.82, 8,
     new THREE.SphereGeometry(7,5,4), 0x0044aa, 7);}
 
   // ── 6. CRASHED TIE FIGHTER ──────────────────────────────────────
@@ -4130,7 +4363,7 @@ function buildScifiArtifacts(){
   w2.rotation.z=2.35;w2.position.set(4.5,-1,0);g.add(w2);
   for(let s of[-1.8,1.8])add(g,new THREE.CylinderGeometry(.12,.12,6,4),M(0x222222,.4,.9),s,0,0,0,0,Math.PI/2);
   g.rotation.z=.45;
-  artL(g,-.80,.35,.46, 6,
+  artL(g,.35,.71,.61, 6,
     new THREE.BoxGeometry(10,4,4), 0x0d0d0d, 1.5, 1);}
 
   // ── 7. MILLENNIUM FALCON DEBRIS ─────────────────────────────────
@@ -4142,7 +4375,7 @@ function buildScifiArtifacts(){
   for(let i=0;i<6;i++){const chunk=add(g,new THREE.BoxGeometry(.5+Math.random()*2,.18,.5+Math.random()*1.5),M(0x666660,.8,.35));
     chunk.position.set((Math.random()-.5)*14,.2,(Math.random()-.5)*14);chunk.rotation.y=Math.random()*Math.PI;}
   g.rotation.z=.18;
-  artL(g,-.70,.20,.68, 9,
+  artL(g,-.22,.57,-.79, 9,
     new THREE.CylinderGeometry(8,8,1.5,10), 0x888880, 1, 1);}
 
   // ── 8. SPINNER (BLADE RUNNER) ────────────────────────────────────
@@ -4153,7 +4386,7 @@ function buildScifiArtifacts(){
     add(g,new THREE.CylinderGeometry(.38,.38,.6,6),M(0x222222,.3,.9,0x2244cc,.45),x,-.2,z);
   add(g,new THREE.BoxGeometry(2.8,.5,1.4),new THREE.MeshStandardMaterial(
     {color:0x223355,roughness:.1,transparent:true,opacity:.55}),0,1.05,2.2);
-  artL(g,-.60,.50,.62, 5,
+  artL(g,.55,.57,-.61, 5,
     new THREE.BoxGeometry(3.5,1.5,8), 0x554433, 2, 2.5);}
 
   // ── 9. DROPSHIP WRECK ───────────────────────────────────────────
@@ -4164,7 +4397,7 @@ function buildScifiArtifacts(){
     add(g,new THREE.CylinderGeometry(.55,.55,2.2,6),M(0x222222,.5,.7),s*8.6,.3,2,0,0,Math.PI/2);}
   add(g,new THREE.ConeGeometry(1.5,3.5,5),M(0x2a2a1a,.7,.3),0,0,-9,Math.PI/2);
   g.rotation.z=.85;
-  artL(g,-.90,.30,.30, 10,
+  artL(g,.64,.09,.76, 10,
     new THREE.BoxGeometry(3.5,4,17), 0x333322, 1.5, 2);}
 
   // ── 10. ESCAPE POD ──────────────────────────────────────────────
@@ -4174,7 +4407,7 @@ function buildScifiArtifacts(){
     new THREE.MeshStandardMaterial({color:0x223355,roughness:.1,transparent:true,opacity:.55}),0,3,0);
   add(g,new THREE.CylinderGeometry(2.6,2.6,.06,12),
     new THREE.MeshBasicMaterial({color:0x110500,transparent:true,opacity:.75}),0,.05,0);
-  artL(g,-.50,.60,.62, 2.5,
+  artL(g,.40,.17,-.90, 2.5,
     new THREE.CylinderGeometry(1.8,1.5,5,6), 0x444444, 1, -1.5);}
 
   // ── 11. T-800 TERMINATOR ────────────────────────────────────────
@@ -4192,7 +4425,7 @@ function buildScifiArtifacts(){
     add(g,new THREE.CylinderGeometry(.15,.13,2.8,5),cr,s*.42,-1.3,0);
     add(g,new THREE.BoxGeometry(.42,.3,.9),cr,s*.42,-2.9,.22);}
   const pl=new THREE.PointLight(0xff2200,1.5,9);pl.position.y=8;g.add(pl);
-  artL(g,.88,.10,-.46, 2,
+  artL(g,-.58,.09,.81, 2,
     new THREE.CylinderGeometry(.7,.5,9,5), 0x888888, 4.5);}
 
   // ── 12. WALL-E ──────────────────────────────────────────────────
@@ -4203,7 +4436,7 @@ function buildScifiArtifacts(){
     add(g,new THREE.CircleGeometry(.19,8),new THREE.MeshBasicMaterial({color:0x8888ff,transparent:true,opacity:.85}),s*.36,3.25,.46);}
   for(let s of[-1,1])add(g,new THREE.BoxGeometry(.38,1.1,2),M(0x1a1a1a,.9,.1),s*.9,.6,0);
   for(let s of[-1,1]){const arm=add(g,new THREE.BoxGeometry(.1,.1,2.2),M(0x554422,.6,.3),s*1.1,2.2,.5);arm.rotation.z=s*.45;}
-  artL(g,.82,.22,-.54, 2,
+  artL(g,.76,.09,-.64, 2,
     new THREE.BoxGeometry(1.8,3.5,1.8), 0x886633, 2);}
 
   // ── 13. SENTINEL (MATRIX) ───────────────────────────────────────
@@ -4215,7 +4448,7 @@ function buildScifiArtifacts(){
   for(let i=0;i<12;i++){const a=i/12*Math.PI*2,sp=.5+Math.random()*.55,len=2.5+Math.random()*2;
     const t=add(g,new THREE.CylinderGeometry(.05,.14,len,4),M(0x222222,.5,.8),Math.cos(a)*sp,0,Math.sin(a)*sp);
     t.rotation.z=Math.cos(a)*.9;t.rotation.x=Math.sin(a)*.9;}
-  artL(g,.78,.30,-.55, 2.5,
+  artL(g,.78,-.57,.26, 2.5,
     new THREE.SphereGeometry(2,5,4), 0x111111, 3, 2);}
 
   // ── 14. K-2SO PARTS ─────────────────────────────────────────────
@@ -4227,7 +4460,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.CylinderGeometry(.21,.21,3.2,6),dk,.6,.18,2.2,.95,0,.22);
   for(let s of[-1,1])add(g,new THREE.SphereGeometry(.09,4,4),
     new THREE.MeshBasicMaterial({color:0xff4400,transparent:true,opacity:.5}),s*.2,.72,.49);
-  artL(g,.88,.00,-.48, 3,
+  artL(g,-.25,-.57,.78, 3,
     new THREE.BoxGeometry(4,1.5,4), 0x1a1a1a, .75);}
 
   // ── 15. LIGHTSABER IN THE GROUND ────────────────────────────────
@@ -4237,7 +4470,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.CylinderGeometry(.04,.07,5.5,6),glow(0x00ffff,.92),0,4.8,0);
   add(g,new THREE.CylinderGeometry(.14,.2,5.5,6),glow(0x00aaff,.28),0,4.8,0);
   const pl=new THREE.PointLight(0x00ccff,5,18);pl.position.y=5;g.add(pl);
-  artL(g,.30,.77,.56, 1.5,
+  artL(g,-.80,-.57,-.18, 1.5,
     new THREE.CylinderGeometry(.1,.1,7,5), 0x00aaff, 4);}
 
   // ── 16. NEURALYZER ──────────────────────────────────────────────
@@ -4247,7 +4480,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.SphereGeometry(.22,8,6,0,Math.PI*2,0,Math.PI*.5),chrome,0,2.32,0);
   add(g,new THREE.SphereGeometry(.08,5,4),new THREE.MeshBasicMaterial({color:0xffffff}),0,2.4,0);
   const pw=new THREE.PointLight(0xffffff,.6,4);pw.position.y=2.4;g.add(pw);
-  artL(g,-.40,.68,-.62, 1,
+  artL(g,.25,-.57,-.78, 1,
     new THREE.CylinderGeometry(.28,.28,2.5,6), 0xcccccc, 1.5, .5);}
 
   // ── 17. POWER ORB ────────────────────────────────────────────────
@@ -4259,7 +4492,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.SphereGeometry(.92,10,8),glow(0xaa00dd,.9),0,1.5,0);
   add(g,new THREE.SphereGeometry(.58,8,6),glow(0xff66ff,.75),0,1.5,0);
   const pl=new THREE.PointLight(0xaa00ff,5.5,22);pl.position.y=1.5;g.add(pl);
-  artL(g,.50,.72,-.48, 2.5,
+  artL(g,.50,-.84,.22, 2.5,
     new THREE.SphereGeometry(1.8,5,4), 0x9900cc, 2);}
 
   // ── 18. ANNIHILATION SPHERE ──────────────────────────────────────
@@ -4269,7 +4502,7 @@ function buildScifiArtifacts(){
   for(let i=0;i<3;i++)
     add(g,new THREE.TorusGeometry(3.6+i*.5,.09,5,28),glow(0x88aaff,.5-.1*i),0,2,0,i*.5,i*.8,i*.3);
   const pl=new THREE.PointLight(0x4488ff,2.5,22);pl.position.y=2;g.add(pl);
-  artL(g,-.20,.78,.59, 3.5,
+  artL(g,.791,-.574,-.212, 3.5,
     new THREE.SphereGeometry(3.2,6,4), 0x888899, 3);}
 
   // ── 19. ANCIENT STARGATE ─────────────────────────────────────────
@@ -4280,7 +4513,7 @@ function buildScifiArtifacts(){
   add(g,new THREE.CircleGeometry(6.3,32),
     new THREE.MeshBasicMaterial({color:0x223344,transparent:true,opacity:.25,side:THREE.DoubleSide}));
   g.rotation.x=.12;
-  artL(g,.58,.52,-.62, 8,
+  artL(g,-.42,-.84,-.34, 8,
     new THREE.TorusGeometry(7,1,5,16), 0x998877, 0);}
 
   // ── 20. SANDWORM SKELETON ────────────────────────────────────────
@@ -4299,7 +4532,7 @@ function buildScifiArtifacts(){
     g.add(ring);
     if(i%3===0&&ly>0){const fin=add(g,new THREE.BoxGeometry(.3,segR*.7,.15),bm,lx,ly+segR*.5,lz);fin.quaternion.copy(ring.quaternion);}
   }
-  artL(g,-.10,-.50,.88, 8,
+  artL(g,.34,-.84,-.42, 8,
     new THREE.BoxGeometry(68,8,18), 0xd4c4a0, 4);}
 }
 
@@ -4545,6 +4778,7 @@ function loop(time,frame){
 
   // updateWeapon moved above
 
+  updateLensFlare();
   renderer.render(scene,camera);
 }
 
