@@ -120,7 +120,7 @@ let weaponCondition={}; // type → 0..100
 // ── Day/night cycle ──────────────────────────────────────────────
 let sunLight=null, ambientLight=null;
 let flareItems=[], _flareOpacity=0;
-const _flareSunPos=new THREE.Vector3(320,480,-260).normalize().multiplyScalar(2800);
+let _flareSunPos=null; // set in buildLensFlare() after THREE is confirmed live
 // ── Spatial audio tracks ─────────────────────────────────────────
 let enemyHumNodes={};  // enemyId → {osc,gain,pan}
 let musicNodes=null;
@@ -517,7 +517,7 @@ function buildWorld(){
     scene.add(sp);
   })();
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
-  buildLensFlare();
+  try{ buildLensFlare(); }catch(e){ console.warn('Lens flare skipped:',e); }
 }
 
 // ── LENS FLARE SYSTEM ─────────────────────────────────────────────────────
@@ -526,6 +526,8 @@ function mkFlareTex(size,drawFn){
   drawFn(c.getContext('2d'),size);return new THREE.CanvasTexture(c);
 }
 function buildLensFlare(){
+  // Compute sun world position here — THREE is guaranteed live inside a called function
+  _flareSunPos=new THREE.Vector3(320,480,-260).normalize().multiplyScalar(2800);
   const defs=[
     // ① CORONA — enormous soft radial glow centred on the sun (t=0)
     {t:0.00,sz:560,baseOp:0.60,tex:mkFlareTex(256,(ctx,s)=>{
@@ -572,13 +574,14 @@ function buildLensFlare(){
     // ④ HEXAGONAL APERTURE GHOST — blue-tinted lens bokeh (t=0.56)
     {t:0.56,sz:150,baseOp:0.40,tex:mkFlareTex(256,(ctx,s)=>{
       ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.42;
-      function hexPath(rad){
+      // Inlined hex path helper (no function declaration inside arrow fn — strict mode safe)
+      const hexPath=(rad)=>{
         ctx.beginPath();
         for(let i=0;i<6;i++){const a=i*Math.PI/3+Math.PI/6;
           i===0?ctx.moveTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a))
                :ctx.lineTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a));}
         ctx.closePath();
-      }
+      };
       hexPath(r);
       const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
       g.addColorStop(0.00,'rgba(170,225,255,0.55)');g.addColorStop(0.55,'rgba( 75,160,255,0.25)');
@@ -620,13 +623,15 @@ function buildLensFlare(){
     const mat=new THREE.SpriteMaterial({map:d.tex,transparent:true,
       blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
     const sp=new THREE.Sprite(mat);sp.visible=false;scene.add(sp);
-    flareItems.push({...d,mat,sp});
+    // Explicit copy instead of spread — avoids ES2018 requirement on older Quest browsers
+    flareItems.push({t:d.t,sz:d.sz,baseOp:d.baseOp,tex:d.tex,mat:mat,sp:sp});
   });
 }
 
 function updateLensFlare(){
-  if(!flareItems.length)return;
+  if(!flareItems.length||!_flareSunPos)return; // not initialised yet
   const cam=renderer.xr.isPresenting?renderer.xr.getCamera():camera;
+  if(!cam)return;
   const camPos=new THREE.Vector3();cam.getWorldPosition(camPos);
   const camDir=new THREE.Vector3();cam.getWorldDirection(camDir);
   const toSun=_flareSunPos.clone().sub(camPos).normalize();
