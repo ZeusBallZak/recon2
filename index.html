@@ -9,7 +9,7 @@
 html,body{width:100%;height:100%;background:#000;overflow:hidden;}
 canvas{display:block;width:100%;height:100%;}
 
-/* ── Pre-VR overlay (visible only on flat screen before entering VR ) ── */
+/* ── Pre-VR overlay (visible only on flat screen before entering VR) ── */
 #overlay{
   position:fixed;inset:0;display:flex;flex-direction:column;
   align-items:center;justify-content:center;
@@ -119,8 +119,7 @@ const SHIELD_DUR=3.0, SHIELD_RECHARGE=10.0;
 let weaponCondition={}; // type → 0..100
 // ── Day/night cycle ──────────────────────────────────────────────
 let sunLight=null, ambientLight=null;
-let flareItems=[], _flareOpacity=0;
-let _flareSunPos=null; // set in buildLensFlare() after THREE is confirmed live
+
 // ── Spatial audio tracks ─────────────────────────────────────────
 let enemyHumNodes={};  // enemyId → {osc,gain,pan}
 let musicNodes=null;
@@ -515,150 +514,7 @@ function buildWorld(){
     scene.add(sp);
   })();
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
-  try{ buildLensFlare(); }catch(e){ console.warn('Lens flare skipped:',e); }
 }
-
-// ── LENS FLARE SYSTEM ─────────────────────────────────────────────────────
-function mkFlareTex(size,drawFn){
-  const c=document.createElement('canvas');c.width=c.height=size;
-  drawFn(c.getContext('2d'),size);return new THREE.CanvasTexture(c);
-}
-function buildLensFlare(){
-  // Compute sun world position here — THREE is guaranteed live inside a called function
-  _flareSunPos=new THREE.Vector3(320,480,-260).normalize().multiplyScalar(2800);
-  const defs=[
-    // ① CORONA — enormous soft radial glow centred on the sun (t=0)
-    {t:0.00,sz:560,baseOp:0.60,tex:mkFlareTex(256,(ctx,s)=>{
-      const g=ctx.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
-      g.addColorStop(0.00,'rgba(255,255,235,0.90)');
-      g.addColorStop(0.12,'rgba(255,235,160,0.60)');
-      g.addColorStop(0.32,'rgba(255,180, 60,0.22)');
-      g.addColorStop(0.60,'rgba(255,110,  0,0.07)');
-      g.addColorStop(1.00,'rgba(255, 70,  0,0.00)');
-      ctx.fillStyle=g;ctx.fillRect(0,0,s,s);
-    })},
-    // ② STARBURST — 12-point diffraction spikes (t=0, layered over corona)
-    {t:0.00,sz:360,baseOp:0.50,tex:mkFlareTex(512,(ctx,s)=>{
-      const cx=s/2,cy=s/2;ctx.clearRect(0,0,s,s);
-      for(let i=0;i<12;i++){
-        const a=i*Math.PI/6;
-        const len=(i%2===0)?s*0.47:s*0.29;
-        const hw=0.020;
-        const g=ctx.createLinearGradient(cx,cy,cx+Math.cos(a)*len,cy+Math.sin(a)*len);
-        g.addColorStop(0.00,'rgba(255,255,220,1.0)');
-        g.addColorStop(0.12,'rgba(255,245,170,0.65)');
-        g.addColorStop(0.45,'rgba(255,210, 90,0.22)');
-        g.addColorStop(1.00,'rgba(255,170, 20,0.00)');
-        ctx.beginPath();
-        ctx.moveTo(cx,cy);
-        ctx.lineTo(cx+Math.cos(a-hw)*len*1.1,cy+Math.sin(a-hw)*len*1.1);
-        ctx.lineTo(cx+Math.cos(a)*len,cy+Math.sin(a)*len);
-        ctx.lineTo(cx+Math.cos(a+hw)*len*1.1,cy+Math.sin(a+hw)*len*1.1);
-        ctx.closePath();ctx.fillStyle=g;ctx.fill();
-      }
-    })},
-    // ③ AIRY DISK — concentric rainbow diffraction rings (t=0.16)
-    {t:0.16,sz:210,baseOp:0.48,tex:mkFlareTex(256,(ctx,s)=>{
-      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2;
-      [[0.18,'rgba(255, 90, 70,'],[0.30,'rgba(255,215, 50,'],[0.42,'rgba( 60,230, 80,'],
-       [0.54,'rgba( 55,140,255,'],[0.65,'rgba(185, 55,255,']].forEach(([r,col])=>{
-        const rad=r*s/2;
-        const g=ctx.createRadialGradient(cx,cy,rad-7,cx,cy,rad+7);
-        g.addColorStop(0,col+'0)');g.addColorStop(0.5,col+'0.55)');g.addColorStop(1,col+'0)');
-        ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);
-        ctx.lineWidth=14;ctx.strokeStyle=g;ctx.stroke();
-      });
-    })},
-    // ④ HEXAGONAL APERTURE GHOST — blue-tinted lens bokeh (t=0.56)
-    {t:0.56,sz:150,baseOp:0.40,tex:mkFlareTex(256,(ctx,s)=>{
-      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.42;
-      // Inlined hex path helper (no function declaration inside arrow fn — strict mode safe)
-      const hexPath=(rad)=>{
-        ctx.beginPath();
-        for(let i=0;i<6;i++){const a=i*Math.PI/3+Math.PI/6;
-          i===0?ctx.moveTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a))
-               :ctx.lineTo(cx+rad*Math.cos(a),cy+rad*Math.sin(a));}
-        ctx.closePath();
-      };
-      hexPath(r);
-      const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
-      g.addColorStop(0.00,'rgba(170,225,255,0.55)');g.addColorStop(0.55,'rgba( 75,160,255,0.25)');
-      g.addColorStop(0.88,'rgba( 35, 75,200,0.12)');g.addColorStop(1.00,'rgba( 15, 35,160,0.00)');
-      ctx.fillStyle=g;ctx.fill();
-      hexPath(r);ctx.strokeStyle='rgba(190,235,255,0.65)';ctx.lineWidth=5;ctx.stroke();
-      hexPath(r*0.55);ctx.strokeStyle='rgba(110,185,255,0.30)';ctx.lineWidth=2;ctx.stroke();
-    })},
-    // ⑤ CHROMATIC ABERRATION ORB — RGB-split glowing ring (t=0.88)
-    {t:0.88,sz:100,baseOp:0.46,tex:mkFlareTex(256,(ctx,s)=>{
-      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.36;
-      [[255,55,55,-9],[55,255,85,0],[55,105,255,9]].forEach(([R,G,B,dx])=>{
-        const g=ctx.createRadialGradient(cx+dx,cy,r*0.52,cx+dx,cy,r);
-        g.addColorStop(0.00,`rgba(${R},${G},${B},0)`);
-        g.addColorStop(0.60,`rgba(${R},${G},${B},0.12)`);
-        g.addColorStop(0.85,`rgba(${R},${G},${B},0.48)`);
-        g.addColorStop(1.00,`rgba(${R},${G},${B},0)`);
-        ctx.beginPath();ctx.arc(cx+dx,cy,r,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
-      });
-    })},
-    // ⑥ SPECTRAL GHOST — iridescent ring on the far side opposite the sun (t=1.55)
-    {t:1.55,sz:80,baseOp:0.50,tex:mkFlareTex(256,(ctx,s)=>{
-      ctx.clearRect(0,0,s,s);const cx=s/2,cy=s/2,r=s*0.38;
-      const g=ctx.createRadialGradient(cx,cy,r*0.54,cx,cy,r);
-      g.addColorStop(0.00,'rgba(255,255,255,0)');
-      g.addColorStop(0.48,'rgba(165, 55,255,0.14)');
-      g.addColorStop(0.80,'rgba( 55,205,255,0.52)');
-      g.addColorStop(0.93,'rgba(255, 75,145,0.28)');
-      g.addColorStop(1.00,'rgba(255, 75,145,0.00)');
-      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
-      const g2=ctx.createRadialGradient(cx,cy,0,cx,cy,r*0.50);
-      g2.addColorStop(0.00,'rgba(225,185,255,0.32)');
-      g2.addColorStop(0.65,'rgba(145, 80,225,0.12)');
-      g2.addColorStop(1.00,'rgba( 80, 40,185,0.00)');
-      ctx.beginPath();ctx.arc(cx,cy,r*0.50,0,Math.PI*2);ctx.fillStyle=g2;ctx.fill();
-    })},
-  ];
-  defs.forEach(d=>{
-    const mat=new THREE.SpriteMaterial({map:d.tex,transparent:true,
-      blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false});
-    const sp=new THREE.Sprite(mat);sp.visible=false;scene.add(sp);
-    // Explicit copy instead of spread — avoids ES2018 requirement on older Quest browsers
-    flareItems.push({t:d.t,sz:d.sz,baseOp:d.baseOp,tex:d.tex,mat:mat,sp:sp});
-  });
-}
-
-function updateLensFlare(){
-  if(!flareItems.length||!_flareSunPos)return; // not initialised yet
-  const cam=renderer.xr.isPresenting?renderer.xr.getCamera():camera;
-  if(!cam)return;
-  const camPos=new THREE.Vector3();cam.getWorldPosition(camPos);
-  const camDir=new THREE.Vector3();cam.getWorldDirection(camDir);
-  const toSun=_flareSunPos.clone().sub(camPos).normalize();
-  // Analytical ray–planet-sphere occlusion test
-  const b=2*camPos.dot(toSun);
-  const c2=camPos.dot(camPos)-(PLANET_R+10)*(PLANET_R+10);
-  const disc=b*b-4*c2;
-  const occluded=disc>0&&(-b-Math.sqrt(disc))*0.5>1.0;
-  const sunDot=camDir.dot(toSun);
-  let target=(!occluded&&sunDot>0)?Math.sqrt(Math.max(0,(sunDot-0.15)/0.85)):0;
-  const sunNDC=_flareSunPos.clone().project(cam);
-  if(target>0){
-    const ed=Math.max(Math.abs(sunNDC.x),Math.abs(sunNDC.y));
-    target*=Math.max(0,1.0-Math.pow(Math.max(0,ed-0.55)/0.55,1.5));
-  }
-  _flareOpacity+=((target-_flareOpacity)*0.06);
-  if(_flareOpacity<0.004){flareItems.forEach(f=>f.sp.visible=false);return;}
-  const DIST=80;
-  flareItems.forEach(item=>{
-    item.sp.visible=true;
-    const fx=sunNDC.x*(1-item.t), fy=sunNDC.y*(1-item.t);
-    const ndc3=new THREE.Vector3(fx,fy,0.50).unproject(cam);
-    ndc3.sub(camPos).normalize();
-    item.sp.position.copy(camPos).addScaledVector(ndc3,DIST);
-    item.sp.scale.setScalar(item.sz*DIST/3000);
-    item.mat.opacity=_flareOpacity*item.baseOp;
-  });
-}
-// ─────────────────────────────────────────────────────────────────────────────
 
 function buildStarfield(){
   // Main field — 10 k stars (Quest 3 budget)
@@ -4686,7 +4542,6 @@ function loop(time,frame){
 
   // updateWeapon moved above
 
-  updateLensFlare();
   renderer.render(scene,camera);
 }
 
