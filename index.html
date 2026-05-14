@@ -143,8 +143,6 @@ let pyramidColliders=[]; // [{basePos,axis,r,h,baseR}] — same format used by c
 
 // ── Input state ────────────────────────────────────────────────────────
 let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false;
-// Per-hand controller profile: 'standard' | 'trackpad' | 'index' | 'hand' | 'auto'
-const _ctrlProfile={left:'auto',right:'auto'};
 // ── Dash state ────────────────────────────────────────────────────
 let dashActive=false, dashRemaining=0, dashCooldown=0;
 const DASH_SPEED=50;    // units/s (covers 10 m in 0.2 s)
@@ -1064,89 +1062,10 @@ function buildDamageFlash(){
 }
 
 // ════════════════════════════════════════════════════════════════
-//  CONTROLLERS  — handedness-aware assignment
+//  CONTROLLERS  — Meta Quest 3 Touch controller layout
+//  Left stick: move  |  Right stick: snap turn
+//  Right trigger: fire  |  A: jump  |  B: dash  |  X: weapon cycle
 // ════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════
-//  MULTI-HEADSET CONTROLLER ABSTRACTION
-//  Detects controller type from XRInputSource.profiles and routes
-//  axis / button reads appropriately for each headset family.
-//
-//  Supported:
-//    Meta Quest 2 / 3 / 3S  — 'standard'  (Touch controllers, thumbstick at axes[2/3])
-//    PICO 4                  — 'standard'  (PICO controllers, identical xr-standard layout)
-//    Sony PSVR2              — 'standard'  (Sense controllers, xr-standard mapping)
-//    Valve Index             — 'index'     (Knuckle controllers, trackpad[0/1]+thumbstick[2/3])
-//    HTC Vive Pro 2 / Wand   — 'trackpad'  (trackpad only at axes[0/1], no face buttons)
-//    HTC Vive Focus / Cosmos — 'trackpad'
-//    Windows Mixed Reality   — 'wmr'       (trackpad[0/1] + thumbstick[2/3], face buttons ok)
-//    Apple Vision Pro        — 'hand'      (hand-tracking, pinch fires selectstart)
-//    SteamVR / generic       — 'auto'      (tries both axis sets, guesses buttons)
-// ════════════════════════════════════════════════════════════════
-
-// Profile keyword → internal type table (checked against full profiles string)
-const _PROFILE_TABLE = [
-  [/htc-vive-controller/,         'trackpad'],
-  [/htc-vive-focus/,              'trackpad'],
-  [/htc-cosmos/,                  'trackpad'],
-  [/valve-index/,                 'index'   ],
-  [/windows-mixed-reality/,       'wmr'     ],
-  [/oculus-touch/,                'standard'],
-  [/pico-neo|pico-4|pico4/,       'standard'],
-  [/playstation-dualshock|dualsense|psvr/,'standard'],
-  [/samsung-odyssey/,             'standard'],
-  [/generic-trigger-squeeze-thumbstick/,'standard'],
-  [/generic-trigger-squeeze-touchpad/, 'trackpad'],
-];
-
-function detectCtrlProfile(inputSource){
-  if(inputSource.hand) return 'hand';
-  const p=(inputSource.profiles||[]).join(' ').toLowerCase();
-  for(const[rx,type] of _PROFILE_TABLE) if(rx.test(p)) return type;
-  return 'auto';
-}
-
-// Returns {x, y} for the primary locomotion / rotation stick.
-// On trackpad-only headsets this is axes[0/1]; on everything else it's
-// axes[2/3] (thumbstick) with a fallback to axes[0/1] when [2/3] are idle.
-function ctrlAxes(gp, handedness){
-  const ax=gp.axes, prof=_ctrlProfile[handedness];
-  if(prof==='trackpad'){
-    return {x:ax[0]||0, y:ax[1]||0};
-  }
-  // standard / index / wmr / auto: prefer thumbstick [2/3]
-  const tx=ax[2]||0, ty=ax[3]||0;
-  if(Math.abs(tx)>0.04||Math.abs(ty)>0.04) return {x:tx,y:ty};
-  // fallback: some SteamVR-wrapped controllers put thumbstick at [0/1]
-  return {x:ax[0]||0, y:ax[1]||0};
-}
-
-// Returns a button state with .pressed and .value, never throws.
-// action: 'grip' | 'primary' | 'secondary' | 'menu' | 'thumbstick'
-function ctrlBtn(gp, handedness, action){
-  const b=gp.buttons, prof=_ctrlProfile[handedness];
-  const safe=(i)=>b[i]??{pressed:false,touched:false,value:0};
-  switch(action){
-    case 'grip':
-      return safe(1); // squeeze — same on all headsets
-    case 'thumbstick':
-      // Vive: touchpad-click is [2]; standard: thumbstick click is [3]
-      return prof==='trackpad' ? safe(2) : safe(3);
-    case 'primary':
-      // A (right) / X (left) on Quest/Index/PSVR2/PICO
-      // Vive has no face buttons → re-map touchpad click
-      // WMR has face buttons at [4]
-      return prof==='trackpad' ? safe(2) : safe(4);
-    case 'secondary':
-      // B (right) / Y (left) — not present on Vive/trackpad headsets
-      if(prof==='trackpad') return {pressed:false,touched:false,value:0};
-      return safe(5);
-    case 'menu':
-      // Vive menu button is at [3]; WMR/generic may expose it at [3] or [4]
-      return prof==='trackpad'||prof==='wmr' ? safe(3) : safe(5);
-  }
-  return {pressed:false,touched:false,value:0};
-}
-
 function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl=renderer.xr.getController(i);
@@ -1155,7 +1074,6 @@ function buildControllers(){
 
     ctrl.addEventListener('connected',e=>{
       const hand=e.data.handedness;
-      _ctrlProfile[hand]=detectCtrlProfile(e.data); // ← profile detection
       if(hand==='right'){ rightCtrl=ctrl;rightGrip=grip;rightXRSource=e.data;onRightConnected();
         // Confirmation buzz — confirms haptics are alive the moment you pick up the controller
         setTimeout(()=>pulseSource(rightXRSource,1.0,200),200);
@@ -1287,17 +1205,17 @@ function setupXRButton(){
   const btn=document.getElementById('vr-btn');
   if(!navigator.xr){
     btn.textContent='WebXR Not Supported';
-    setStatus('Open in the Meta Quest Browser, PICO Browser, or a WebXR-capable PC browser (Chrome + SteamVR).');
+    setStatus('Open in the Meta Quest Browser to play.');
     return;
   }
   navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
     if(ok){
       btn.textContent='ENTER VR';btn.disabled=false;
       btn.onclick=enterVR;
-      setStatus('Headset ready — Meta Quest 2/3/3S · PICO 4 · PSVR2 · Valve Index · HTC Vive · Apple Vision Pro · WMR');
+      setStatus('Meta Quest 3 ready.');
     }else{
       btn.textContent='VR Not Available';
-      setStatus('No VR headset detected. Connect a headset and refresh, or open in your headset\'s browser.');
+      setStatus('No VR headset detected. Open in the Meta Quest Browser.');
     }
   }).catch(e=>{
     btn.textContent='VR Check Failed';
@@ -1844,25 +1762,15 @@ function updatePlayer(dt){
   let moveX=0,moveZ=0;
 
   for(const src of session.inputSources){
-    // Hand-tracking sources (Apple Vision Pro, etc.) have no gamepad axes.
-    // Fire / weapon actions are handled via selectstart which still fires for pinch.
-    // Sprint / jump / dash are unavailable on pure hand-tracking — skip gracefully.
-    if(!src.gamepad) continue;
-    const gp=src.gamepad;
-    const hand=src.handedness;
+    if(!src.gamepad)continue;
+    const gp=src.gamepad,ax=gp.axes;
 
-    if(hand==='left'){
-      // ── Locomotion stick (thumbstick OR trackpad depending on headset) ──
-      const {x,y}=ctrlAxes(gp,hand);
-      const DZ=0.14; // dead zone applied consistently for all headsets
-      if(Math.abs(x)>DZ) moveX=x;
-      if(Math.abs(y)>DZ) moveZ=y;
-
-      // Grip = sprint (works on every headset that has a grip button)
-      leftGripHeld=ctrlBtn(gp,hand,'grip').pressed;
-
-      // Primary face button (X on Quest, touchpad-click on Vive) → cycle weapons
-      const xNow=ctrlBtn(gp,hand,'primary').pressed;
+    if(src.handedness==='left'){
+      if(Math.abs(ax[2])>.15)moveX=ax[2];
+      if(Math.abs(ax[3])>.15)moveZ=ax[3];
+      leftGripHeld=gp.buttons[1]?.pressed??false;
+      // X button (index 4): cycle weapons
+      const xNow=gp.buttons[4]?.pressed??false;
       if(xNow&&!xWasPressed){
         currentWeaponIndex=(currentWeaponIndex+1)%WEAPONS_ORDER.length;
         const nextType=WEAPONS_ORDER[currentWeaponIndex];
@@ -1872,20 +1780,17 @@ function updatePlayer(dt){
       xWasPressed=xNow;
     }
 
-    if(hand==='right'){
-      // ── Snap turn — right stick/trackpad X axis ──────────────────────
-      const {x:turnX}=ctrlAxes(gp,hand);
-      const TURN_DZ=_ctrlProfile[hand]==='trackpad'?0.40:0.65; // trackpads need lighter touch
-      if(snapCooldown<=0&&Math.abs(turnX)>TURN_DZ){
+    if(src.handedness==='right'){
+      // Right thumbstick X: snap turn
+      if(snapCooldown<=0&&Math.abs(ax[2])>.65){
         const surfNorm=dolly.position.clone().normalize();
         const snapQ=new THREE.Quaternion()
-          .setFromAxisAngle(surfNorm,-Math.sign(turnX)*SENS_SNAP);
+          .setFromAxisAngle(surfNorm,-Math.sign(ax[2])*SENS_SNAP);
         dolly.quaternion.premultiply(snapQ);
         snapCooldown=.38;
       }
-
-      // Primary face button (A on Quest/Index/PSVR2/PICO, touchpad-click on Vive) → jump
-      const aNow=ctrlBtn(gp,hand,'primary').pressed;
+      // A button (index 4): super jump
+      const aNow=gp.buttons[4]?.pressed??false;
       if(aNow&&!aWasPressed&&isGrounded){
         playerVY=JUMP_VEL;
         isGrounded=false;
@@ -1893,10 +1798,8 @@ function updatePlayer(dt){
         drawHUD();
       }
       aWasPressed=aNow;
-
-      // Secondary face button (B on Quest/Index/PSVR2/PICO) → dash forward
-      // Vive has no B equivalent — dash simply unavailable on that hardware.
-      const bNow=ctrlBtn(gp,hand,'secondary').pressed;
+      // B button (index 5): dash forward
+      const bNow=gp.buttons[5]?.pressed??false;
       if(bNow&&!bWasPressed&&!dashActive&&dashCooldown<=0&&gameActive){
         const sN=dolly.position.clone().normalize();
         camera.getWorldDirection(_dashDir);
