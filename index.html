@@ -119,6 +119,7 @@ const SHIELD_DUR=3.0, SHIELD_RECHARGE=10.0;
 let weaponCondition={}; // type → 0..100
 // ── Day/night cycle ──────────────────────────────────────────────
 let sunLight=null, ambientLight=null;
+let flareSprites=[], _flareOpacity=0, _flareSunDir=null; // lens flare
 
 // ── Spatial audio tracks ─────────────────────────────────────────
 let enemyHumNodes={};  // enemyId → {osc,gain,pan}
@@ -514,7 +515,95 @@ function buildWorld(){
     scene.add(sp);
   })();
   const jl=new THREE.DirectionalLight(0xcc6633,0.45);jl.position.set(-850,620,-1900);scene.add(jl);
+  try{ buildFlare(); }catch(e){ console.warn('Flare skipped:',e); }
 }
+
+// ── SUN LENS FLARE ──────────────────────────────────────────────────────────
+// Single white radial-gradient sprite texture shared by all elements.
+// Each element is a THREE.Sprite with AdditiveBlending + per-material colour tint.
+// No ES2018 spread, no function declarations inside callbacks, no top-level THREE.
+function buildFlare(){
+  // White centre → transparent edge, 64×64 is plenty for a blurred glow
+  const cv=document.createElement('canvas'); cv.width=cv.height=64;
+  const ctx=cv.getContext('2d');
+  const grd=ctx.createRadialGradient(32,32,0,32,32,32);
+  grd.addColorStop(0.00,'rgba(255,255,255,1.00)');
+  grd.addColorStop(0.35,'rgba(255,255,255,0.55)');
+  grd.addColorStop(1.00,'rgba(255,255,255,0.00)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,64,64);
+  const tex=new THREE.CanvasTexture(cv);
+
+  // Sun direction (unit vector) — computed here, never at top-level scope
+  _flareSunDir=new THREE.Vector3(320,480,-260).normalize();
+
+  // Flare strip: t=0 → sun,  t=0.5 → screen centre,  t=1 → opposite side
+  // sc = sprite world-units diameter when DIST=60 ahead of camera
+  const defs=[
+    {t:0.00, sc:22, col:0xfff5aa, op:0.75}, // wide corona glow
+    {t:0.00, sc: 7, col:0xffffff, op:0.90}, // bright solar disc
+    {t:0.28, sc: 2, col:0x99bbff, op:0.55}, // near blue ghost
+    {t:0.60, sc: 3, col:0xffcc77, op:0.45}, // warm mid ghost
+    {t:1.15, sc: 5, col:0xaaddff, op:0.38}, // cool far ghost
+  ];
+
+  for(let i=0;i<defs.length;i++){
+    const d=defs[i];
+    const mat=new THREE.SpriteMaterial({
+      map:tex, color:d.col,
+      transparent:true,
+      blending:THREE.AdditiveBlending,
+      depthWrite:false, depthTest:false
+    });
+    const sp=new THREE.Sprite(mat);
+    sp.visible=false;
+    scene.add(sp);
+    // Explicit property copy — no spread operator needed
+    flareSprites.push({t:d.t, sc:d.sc, op:d.op, mat:mat, sp:sp});
+  }
+}
+
+function updateFlare(){
+  if(!flareSprites.length||!_flareSunDir)return;
+  const cam=renderer.xr.isPresenting?renderer.xr.getCamera():camera;
+  if(!cam)return;
+
+  const camPos=new THREE.Vector3(); cam.getWorldPosition(camPos);
+  const camDir=new THREE.Vector3(); cam.getWorldDirection(camDir);
+
+  // Ray–sphere planet occlusion: is the sun hidden behind Io?
+  const b=2*camPos.dot(_flareSunDir);
+  const c2=camPos.dot(camPos)-PLANET_R*PLANET_R;
+  const disc=b*b-4*c2;
+  const occluded=disc>0&&(-b-Math.sqrt(disc))*0.5>1;
+
+  // Target opacity: sun must be roughly in view and unoccluded
+  const dot=camDir.dot(_flareSunDir);
+  const target=(!occluded&&dot>0.15)?Math.sqrt((dot-0.15)/0.85):0;
+  _flareOpacity+=((target-_flareOpacity)*0.07);
+
+  if(_flareOpacity<0.005){
+    for(let i=0;i<flareSprites.length;i++) flareSprites[i].sp.visible=false;
+    return;
+  }
+
+  // Project sun world-position into NDC
+  const sunNDC=_flareSunDir.clone().multiplyScalar(2800).project(cam);
+  const DIST=60; // sprites float this many world-units in front of camera
+
+  for(let i=0;i<flareSprites.length;i++){
+    const item=flareSprites[i];
+    item.sp.visible=true;
+    // Slide from sun (t=0) through screen-centre (t=0.5) to opposite (t=1)
+    const nx=sunNDC.x*(1-item.t*2);
+    const ny=sunNDC.y*(1-item.t*2);
+    const wp=new THREE.Vector3(nx,ny,0.5).unproject(cam);
+    wp.sub(camPos).normalize();
+    item.sp.position.copy(camPos).addScaledVector(wp,DIST);
+    item.sp.scale.setScalar(item.sc);
+    item.mat.opacity=_flareOpacity*item.op;
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function buildStarfield(){
   // Main field — 10 k stars (Quest 3 budget)
@@ -4542,6 +4631,7 @@ function loop(time,frame){
 
   // updateWeapon moved above
 
+  updateFlare();
   renderer.render(scene,camera);
 }
 
