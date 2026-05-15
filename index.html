@@ -1413,7 +1413,7 @@ function updateEnemies(dt){
     if(newLOD===0){
       ud.eL.intensity=(.8+.2*Math.sin(ud.hoverPhase*3))*ud.baseLightInt;
     }
-    if(dist>10) updateEnemyAI(e,ud,toP,dist,dt);
+    updateEnemyAI(e,ud,toP,dist,dt);
     ud.shootTimer-=dt;
     if(ud.shootTimer<=0&&dist<70&&eBolts.length<7){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
@@ -3660,24 +3660,47 @@ function assignFlankAngles(){
     if(!_flankAngles[e.uuid])_flankAngles[e.uuid]=(i/(enemies.length||1))*Math.PI*2;
   });
 }
+// Pick a random goal position on the sphere surface that is 5–12 m from the player.
+// Called every 3 seconds per enemy, and immediately when an enemy is inside 5 m.
+function pickEnemyGoal(e, ud){
+  const radius = 5 + Math.random() * 7;          // 5–12 m stand-off distance
+  const angle  = Math.random() * Math.PI * 2;    // random azimuth around player
+  const pNorm  = _camWP.clone().normalize();      // up-vector at player position
+  // Build two orthogonal tangent vectors in the plane tangent to the sphere at the player
+  const arb = (Math.abs(pNorm.y) < 0.9)
+    ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
+  const t1 = new THREE.Vector3().crossVectors(pNorm, arb).normalize();
+  const t2 = new THREE.Vector3().crossVectors(pNorm, t1);
+  // Offset from player, projected onto the sphere surface
+  const goalDir = _camWP.clone()
+    .addScaledVector(t1, Math.cos(angle) * radius)
+    .addScaledVector(t2, Math.sin(angle) * radius)
+    .normalize();
+  const surfR = getPlanetHeight(goalDir);
+  ud.goalPos   = goalDir.multiplyScalar(surfR + ud.hoverH);
+  ud.goalTimer = 3.0;
+}
+
 function updateEnemyAI(e,ud,toPlayer,dist,dt){
   const type=ud.type;
 
+  // ── Goal-position maintenance (keep enemies ≥5 m from player) ────────────
+  // Initialise on first call with a staggered timer so enemies don't all
+  // repick simultaneously.
+  if(!ud.goalPos) pickEnemyGoal(e, ud);
+  ud.goalTimer -= dt;
+  // Repick: timer expired OR enemy has drifted inside the 5-m exclusion zone
+  if(ud.goalTimer <= 0 || dist < 5) pickEnemyGoal(e, ud);
+
   // ── Line-of-sight tracking ─────────────────────────────────────────
-  // "In sight" = enemy is within the camera's forward hemisphere (dot > 0.2
-  // ≈ within ~78° half-angle).  No terrain occlusion check — pure FOV.
   const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   const toEnemy=new THREE.Vector3().subVectors(e.position,_camWP).normalize();
   const inSight=toEnemy.dot(camFwd)>0.2;
   ud.outOfSightTimer=inSight?0:(ud.outOfSightTimer||0)+dt;
 
-  // ── Seek line of sight after 5 seconds out of view ────────────────
-  // Move toward a point in front of the player projected onto the sphere
-  // surface, at 1.5× normal speed, bypassing all other AI modes.
+  // ── Seek line of sight after 3 seconds out of view ────────────────
   if(ud.outOfSightTimer>=3.0){
-    // Target: player position + camera-forward tangent * 20 units
     const playerDir=_camWP.clone().normalize();
-    // Project camFwd onto sphere tangent plane at player position
     const tangFwd=camFwd.clone()
       .addScaledVector(playerDir,-camFwd.dot(playerDir)).normalize();
     const targetPos=_camWP.clone().addScaledVector(tangFwd,20);
@@ -3687,11 +3710,18 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
     return;
   }
 
+  // ── Active repulsion: push directly away when inside 5 m ─────────
+  if(dist < 5){
+    const away = e.position.clone().sub(_camWP).normalize();
+    e.position.addScaledVector(away, ud.speed * 1.5 * dt);
+    return;
+  }
+
   if(type==='scout'){
-    // Circle around player when close, retreat when player looks at them
+    // Circle around player — orbit radius 18 m keeps them well outside 5 m
     if(dist<22){
       const angle=_flankAngles[e.uuid]||0;
-      _flankAngles[e.uuid]=(angle||0)+dt*1.8; // orbit speed
+      _flankAngles[e.uuid]=(angle||0)+dt*1.8;
       const cx=_camWP.x+Math.cos(_flankAngles[e.uuid])*18;
       const cz=_camWP.z+Math.sin(_flankAngles[e.uuid])*18;
       const orbitDir=new THREE.Vector3(cx-e.position.x,0,cz-e.position.z).normalize();
@@ -3700,7 +3730,6 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
     }
   }
   if(type==='heavy'){
-    // Charge ram: when <25 units, occasionally charge forward
     if(!ud.chargeCool)ud.chargeCool=0;
     ud.chargeCool-=dt;
     if(dist<25&&ud.chargeCool<=0&&Math.random()<.008){
@@ -3710,16 +3739,24 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
       ud.chargeTimer-=dt;
       e.position.addScaledVector(toPlayer.clone().normalize(),ud.speed*3.5*dt);
       if(ud.chargeTimer<=0)ud.charging=false;
-      // Ram damage
       if(dist<2.2){takeDamage(22);ud.charging=false;}
       return;
     }
   }
-  // Standard + fallback: slight flank drift
-  const flankAngle=_flankAngles[e.uuid]||0;
-  const flankDir=new THREE.Vector3(Math.cos(flankAngle),0,Math.sin(flankAngle))
-    .multiplyScalar(.28).add(toPlayer.clone().normalize());
-  if(dist>10)e.position.addScaledVector(flankDir.normalize(),ud.speed*dt);
+
+  // ── Standard + fallback: steer toward current goal position ──────────────
+  // Goal is always ≥5 m from the player (guaranteed by pickEnemyGoal).
+  // Enemies approach their goal at normal speed, creating natural spread.
+  const toGoal = new THREE.Vector3().subVectors(ud.goalPos, e.position);
+  const goalDist = toGoal.length();
+  if(goalDist > 1.0){
+    // Blend goal direction with a small flank drift for organic movement
+    const flankAngle = _flankAngles[e.uuid] || 0;
+    const flankDrift = new THREE.Vector3(Math.cos(flankAngle), 0, Math.sin(flankAngle))
+      .multiplyScalar(0.15);
+    const moveDir = toGoal.normalize().add(flankDrift).normalize();
+    e.position.addScaledVector(moveDir, ud.speed * dt);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
