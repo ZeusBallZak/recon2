@@ -2975,8 +2975,14 @@ function launchSlashRibbon(pts, camFwd){
   if(!geo){mat.dispose();return;}
   const mesh=new THREE.Mesh(geo,mat);
   scene.add(mesh);
-  // Velocity: camera forward at the moment of detach, speed 50 units/s
-  const vel=camFwd.clone().multiplyScalar(50);
+  // Velocity: direction the blade tip was actually moving at the moment of detach.
+  // Average over the last 5 samples (~80 ms) to smooth out per-frame jitter.
+  const n=pts.length;
+  const lookback=Math.min(5,n-1);
+  const swingDir=(lookback>0)
+    ?new THREE.Vector3().subVectors(pts[n-1],pts[n-1-lookback]).normalize()
+    :camFwd.clone();
+  const vel=swingDir.multiplyScalar(50);
   // Store camFwd snapshot so ribbon shape stays consistent while traveling
   launchedRibbons.push({pts:pts,vel:vel,fwd:camFwd.clone(),age:0,maxAge:1.4,mesh:mesh,mat:mat});
 }
