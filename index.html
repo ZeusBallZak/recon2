@@ -2759,13 +2759,18 @@ function fireGrenade(){
 }
 
 function fireSaber(){
-  // Trigger pull with saber = melee VFX + close-range damage
+  // Trigger pull = intentional forward slash wave + instant melee at very close range.
+  // The physical swing mechanic (updateSlashDetection) handles motion-based firing.
   playSwingSound();
   for(let i=0;i<4;i++) setTimeout(spawnSaberTrail, i*40);
+  // Slash wave fires straight ahead from the saber tip
+  const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const origin=new THREE.Vector3();
+  if(saberTip) saberTip.getWorldPosition(origin); else rightGrip.getWorldPosition(origin);
+  spawnSlashWave(origin, camFwd, null);
+  // Melee instant-kill for enemies that are already in your face
   const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  for(const e of enemies){
-    if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99;
-  }
+  for(const e of enemies){ if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99; }
 }
 
 function fireRail(){
@@ -2907,39 +2912,57 @@ function fireCannon(){
 //  in the exact swing direction, expands slightly, fades, hits enemies.
 // ════════════════════════════════════════════════════════════════
 
-function spawnSlashWave(origin, dir){
+function spawnSlashWave(origin, travelDir, swingDir){
   const grp=new THREE.Group(); grp.position.copy(origin);
-  grp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,-1), dir.clone().normalize());
+  const fwd=travelDir.clone().normalize();
 
-  // Core crescent arc (white)
-  const coreMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.95,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.38,.028,6,28,Math.PI*1.6),coreMat));
+  // Step 1 — face the crescent disc toward the travel direction
+  grp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,-1), fwd);
 
-  // Outer cyan glow
-  const glowMat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.55,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.44,.055,5,24,Math.PI*1.65),glowMat));
+  // Step 2 — rotate the crescent around the travel axis so its arc angle
+  // matches the physical swing plane (horizontal swing → crescent opens
+  // left-right; vertical swing → crescent opens up-down).
+  // This is the "created from movement" visual signature.
+  if(swingDir){
+    const swingInPlane=swingDir.clone()
+      .addScaledVector(fwd,-swingDir.dot(fwd)).normalize();
+    if(swingInPlane.lengthSq()>0.01){
+      const gUp   =new THREE.Vector3(0,1,0).applyQuaternion(grp.quaternion);
+      const gRight=new THREE.Vector3(1,0,0).applyQuaternion(grp.quaternion);
+      const angle =Math.atan2(swingInPlane.dot(gRight),swingInPlane.dot(gUp));
+      grp.rotateOnWorldAxis(fwd, angle);
+    }
+  }
 
-  // Inner secondary crescent (slightly rotated for depth layering)
-  const innerMat=new THREE.MeshBasicMaterial({color:0xaaffff,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  const inner=new THREE.Mesh(new THREE.TorusGeometry(.28,.018,5,22,Math.PI*1.4),innerMat);
-  inner.rotation.z=.18; grp.add(inner);
+  // VOLT SABER colour palette — electric yellow
+  // Outer halo
+  const glowMat=new THREE.MeshBasicMaterial({color:0xffcc00,transparent:true,opacity:.60,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.50,.072,5,28,Math.PI*1.65),glowMat));
+  // Core bright arc
+  const coreMat=new THREE.MeshBasicMaterial({color:0xffffaa,transparent:true,opacity:.98,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.40,.032,6,28,Math.PI*1.60),coreMat));
+  // Inner white-hot edge
+  const innerMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.85,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const inner=new THREE.Mesh(new THREE.TorusGeometry(.30,.016,5,22,Math.PI*1.40),innerMat);
+  inner.rotation.z=.2; grp.add(inner);
 
-  const pl=new THREE.PointLight(0x44ffff,4,7); grp.add(pl);
+  const pl=new THREE.PointLight(0xffee00,5,9); grp.add(pl);
   scene.add(grp);
-  slashWaves.push({grp,coreMat,glowMat,innerMat,pl,vel:dir.clone().normalize().multiplyScalar(45),age:0,maxAge:1.8});
+  slashWaves.push({grp,coreMat,glowMat,innerMat,pl,
+    vel:fwd.multiplyScalar(80), age:0, maxAge:1.2});
 }
 
 function updateSlashDetection(dt){
   if(currentWeapon!=='saber'||!rightGrip||!gameActive){gripPosInitialised=false;return;}
   slashCooldown=Math.max(0,slashCooldown-dt);
 
-  // Convert grip world position into dolly-local space.
-  // This cancels out thumbstick locomotion so only genuine physical
-  // wrist/arm movement contributes to the velocity measurement.
+  // Track grip position in dolly-local space so locomotion doesn't register as a swing
   const gripWorld=new THREE.Vector3();
   rightGrip.getWorldPosition(gripWorld);
   const gripLocal=dolly.worldToLocal(gripWorld.clone());
-
   _currGripPos.copy(gripLocal);
   if(!gripPosInitialised){_prevGripPos.copy(_currGripPos);gripPosInitialised=true;return;}
 
@@ -2950,13 +2973,19 @@ function updateSlashDetection(dt){
 
   if(speed>SLASH_SPEED_THRESHOLD&&slashCooldown<=0){
     slashCooldown=SLASH_COOLDOWN;
-    // Convert the local velocity direction back to world space for the projectile
-    const localDir=new THREE.Vector3(vx,vy,vz).normalize();
-    const worldDir=localDir.applyQuaternion(dolly.quaternion);
+
+    // Travel direction: always fires FORWARD (toward where you're aiming).
+    // The slash "travels forward" regardless of which way you physically swung.
+    const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+
+    // Swing direction in world space: used only to orient the crescent arc
+    // so a left-right swing produces a differently-angled crescent than an
+    // up-down swing — the visual signature of motion-created slashes.
+    const swingDir=new THREE.Vector3(vx,vy,vz).normalize().applyQuaternion(dolly.quaternion);
+
     const origin=new THREE.Vector3();
-    if(saberTip) saberTip.getWorldPosition(origin);
-    else rightGrip.getWorldPosition(origin);
-    spawnSlashWave(origin, worldDir);
+    if(saberTip) saberTip.getWorldPosition(origin); else rightGrip.getWorldPosition(origin);
+    spawnSlashWave(origin, camFwd, swingDir);
     playSwingSound();
     haptic('right',0.7,35);
     spawnSaberTrail();
@@ -2976,7 +3005,7 @@ function updateSlashWaves(dt){
     for(const e of enemies){
       if(sw.grp.position.distanceTo(e.position)<1.8+sw.age*.3){
         e.userData.hp=0; // 100% — instant kill
-        triggerKillFlash(0x44ffff);
+        triggerKillFlash(0xffee00);
       }
     }
     if(sw.age>=sw.maxAge) done.push(sw);
