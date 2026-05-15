@@ -1018,6 +1018,9 @@ function buildChargeFX(){
 // An invisible Object3D placed at the sword's blade tip in saber geometry
 // space (0, 0.80, 0 — blade top). Used by getWeaponTipOffset().
 let saberTip=null;
+let tipGlowMesh=null, tipGlowMat=null; // inner bright core glow at tip
+let tipHaloMesh=null, tipHaloMat=null; // outer electric halo at tip
+let _tipTrailTimer=0;                  // throttle for continuous tip trails
 
 function getWeaponTipOffset(){
   // Read the actual world position of the appropriate tip object, then
@@ -2400,6 +2403,17 @@ function buildWeaponGeometry(type, parent){
     const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);sg.add(l);
     // Invisible tip marker — used by getWeaponTipOffset() to find blade tip in world space
     saberTip=new THREE.Object3D();saberTip.position.set(0,.80,0);sg.add(saberTip);
+    // ── Tip charge indicator ─────────────────────────────────────────
+    // Inner bright core: white sphere that brightens as swing speed builds
+    tipGlowMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,
+      blending:THREE.AdditiveBlending,depthWrite:false});
+    tipGlowMesh=new THREE.Mesh(new THREE.SphereGeometry(.046,8,6),tipGlowMat);
+    tipGlowMesh.position.set(0,.80,0); sg.add(tipGlowMesh);
+    // Outer electric-yellow halo: larger soft glow
+    tipHaloMat=new THREE.MeshBasicMaterial({color:0xffcc00,transparent:true,opacity:0,
+      blending:THREE.AdditiveBlending,depthWrite:false});
+    tipHaloMesh=new THREE.Mesh(new THREE.SphereGeometry(.10,7,5),tipHaloMat);
+    tipHaloMesh.position.set(0,.80,0); sg.add(tipHaloMesh);
   }
   else if(type==='rail'){
     // Very long barrel + scope + bipod
@@ -2475,7 +2489,7 @@ function buildWeaponGeometry(type, parent){
 function equipWeapon(type){
   currentWeapon=type;
   currentWeaponIndex=WEAPONS_ORDER.indexOf(type);
-  if(type!=='saber') saberTip=null; // cleared; will be set when saber geometry is built
+  if(type!=='saber'){saberTip=null;tipGlowMesh=null;tipGlowMat=null;tipHaloMesh=null;tipHaloMat=null;}
   const def=WEAPONS[type];
   if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
   // Partial refill on pickup if already owned
@@ -2956,14 +2970,21 @@ function spawnSlashWave(origin, travelDir, swingDir){
 }
 
 function updateSlashDetection(dt){
-  if(currentWeapon!=='saber'||!rightGrip||!gameActive){gripPosInitialised=false;return;}
+  if(currentWeapon!=='saber'||!rightGrip||!gameActive){
+    gripPosInitialised=false;
+    if(tipGlowMat)  tipGlowMat.opacity  =Math.max(0,(tipGlowMat.opacity||0)-dt*4);
+    if(tipHaloMat)  tipHaloMat.opacity  =Math.max(0,(tipHaloMat.opacity||0)-dt*4);
+    return;
+  }
   slashCooldown=Math.max(0,slashCooldown-dt);
+  _tipTrailTimer=Math.max(0,_tipTrailTimer-dt);
 
-  // Track grip position in dolly-local space so locomotion doesn't register as a swing
-  const gripWorld=new THREE.Vector3();
-  rightGrip.getWorldPosition(gripWorld);
-  const gripLocal=dolly.worldToLocal(gripWorld.clone());
-  _currGripPos.copy(gripLocal);
+  // Track BLADE TIP, not the grip — the tip traces a larger arc per swing
+  const trackNode=saberTip||rightGrip;
+  const trackWorld=new THREE.Vector3();
+  trackNode.getWorldPosition(trackWorld);
+  const trackLocal=dolly.worldToLocal(trackWorld.clone());
+  _currGripPos.copy(trackLocal);
   if(!gripPosInitialised){_prevGripPos.copy(_currGripPos);gripPosInitialised=true;return;}
 
   const vx=(_currGripPos.x-_prevGripPos.x)/dt;
@@ -2971,20 +2992,27 @@ function updateSlashDetection(dt){
   const vz=(_currGripPos.z-_prevGripPos.z)/dt;
   const speed=Math.sqrt(vx*vx+vy*vy+vz*vz);
 
+  // Drive tip glow — quadratic ramp for dramatic near-threshold buildup
+  const charge=Math.min(1,speed/SLASH_SPEED_THRESHOLD);
+  if(tipGlowMat)  tipGlowMat.opacity  =charge*charge*0.95;
+  if(tipHaloMat)  tipHaloMat.opacity  =charge*0.55;
+  if(tipGlowMesh) tipGlowMesh.scale.setScalar(1+charge*1.8);
+  if(tipHaloMesh) tipHaloMesh.scale.setScalar(1+charge*1.2);
+
+  // Continuous tip trail while building speed — shows the blade arc
+  if(speed>SLASH_SPEED_THRESHOLD*0.40&&_tipTrailTimer<=0){
+    _tipTrailTimer=0.032;
+    spawnSaberTrail();
+  }
+
   if(speed>SLASH_SPEED_THRESHOLD&&slashCooldown<=0){
     slashCooldown=SLASH_COOLDOWN;
-
-    // Travel direction: always fires FORWARD (toward where you're aiming).
-    // The slash "travels forward" regardless of which way you physically swung.
+    if(tipGlowMat) tipGlowMat.opacity=1.0;
+    if(tipHaloMat) tipHaloMat.opacity=0.85;
     const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-
-    // Swing direction in world space: used only to orient the crescent arc
-    // so a left-right swing produces a differently-angled crescent than an
-    // up-down swing — the visual signature of motion-created slashes.
     const swingDir=new THREE.Vector3(vx,vy,vz).normalize().applyQuaternion(dolly.quaternion);
-
     const origin=new THREE.Vector3();
-    if(saberTip) saberTip.getWorldPosition(origin); else rightGrip.getWorldPosition(origin);
+    trackNode.getWorldPosition(origin);
     spawnSlashWave(origin, camFwd, swingDir);
     playSwingSound();
     haptic('right',0.7,35);
@@ -3615,14 +3643,17 @@ function updateKillFlash(dt){
 let saberTrails=[];
 function spawnSaberTrail(){
   if(!weaponGroup)return;
-  const mat=new THREE.MeshBasicMaterial({color:0x44ffff,transparent:true,opacity:.6,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(.08,1.1),mat);
-  // copy blade world transform
-  const bladePos=new THREE.Vector3(0,.45,0);
-  weaponGroup.localToWorld(bladePos);
-  mesh.position.copy(bladePos);
+  // Yellow trail quads at the blade tip, matching Volt Saber colour
+  const mat=new THREE.MeshBasicMaterial({color:0xffee00,transparent:true,opacity:.70,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(.07,.50),mat);
+  // Spawn at the actual blade tip world position
+  const tipPos=new THREE.Vector3();
+  if(saberTip) saberTip.getWorldPosition(tipPos);
+  else { tipPos.set(0,.80,0); weaponGroup.localToWorld(tipPos); }
+  mesh.position.copy(tipPos);
   mesh.quaternion.copy(weaponGroup.getWorldQuaternion(new THREE.Quaternion()));
-  mesh.rotation.z+=(.3-.6*Math.random()); // slight random offset per arc
+  mesh.rotation.z+=(.3-.6*Math.random());
   scene.add(mesh);
   saberTrails.push({mesh,age:0});
 }
