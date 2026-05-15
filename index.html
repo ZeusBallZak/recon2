@@ -165,16 +165,21 @@ let gameOverBillboard=null;
 // ── Weapon system ─────────────────────────────────────────────────────
 let currentWeapon='laser';
 let weaponAmmoMap={laser:Infinity};
-let grenadeProjs=[], rocketProjs=[], cannonProjs=[], slashWaves=[];
+let grenadeProjs=[], rocketProjs=[], cannonProjs=[];
 // ── Sword slash wave velocity tracking ──────────────────────────
 // Track right grip world position each frame to compute swing velocity.
 const _prevGripPos=new THREE.Vector3();
 const _currGripPos=new THREE.Vector3();
 let gripVelX=0, gripVelY=0, gripVelZ=0; // world-space velocity components
-const SLASH_SPEED_THRESHOLD=4.0;  // m/s — minimum swing speed to fire a slash wave
-const SLASH_COOLDOWN=0.28;        // seconds between slash waves (prevent spam on slow swings)
+const SLASH_SPEED_THRESHOLD=4.0;  // m/s — minimum tip speed to activate slash ribbon
+const SLASH_COOLDOWN=0.28;        // seconds — minimum between swing-sound/haptic triggers
+const SLASH_WINDOW=0.5;           // seconds — ribbon stays visible after a fast swing
+const SLASH_HISTORY_SAMPLES=32;   // tip positions stored (32 × ~16 ms ≈ 0.5 s)
 let slashCooldown=0;
 let gripPosInitialised=false;
+// Slash ribbon state (no projectile — the ribbon IS the slash)
+let _slashPts=[], _slashSampleTimer=0, _slashActiveDur=0;
+let _slashMesh=null, _slashMat=null;
 let pickups=[];
 let flameCooldown=0;
 
@@ -1146,7 +1151,7 @@ function startGame(){
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
   shotgunBolts.forEach(b=>scene.remove(b.grp)); shotgunBolts=[];
-  slashWaves.forEach(sw=>scene.remove(sw.grp)); slashWaves=[];
+  _slashPts=[]; _slashActiveDur=0; // reset slash ribbon
   gripPosInitialised=false;
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
   setTimeout(spawnInitialPickups, 1200);
@@ -2773,16 +2778,10 @@ function fireGrenade(){
 }
 
 function fireSaber(){
-  // Trigger pull = intentional forward slash wave + instant melee at very close range.
-  // The physical swing mechanic (updateSlashDetection) handles motion-based firing.
+  // Trigger pull = melee at very close range + VFX.
+  // The slash ribbon is created purely by physical blade movement (updateSlashDetection).
   playSwingSound();
   for(let i=0;i<4;i++) setTimeout(spawnSaberTrail, i*40);
-  // Slash wave fires straight ahead from the saber tip
-  const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  const origin=new THREE.Vector3();
-  if(saberTip) saberTip.getWorldPosition(origin); else rightGrip.getWorldPosition(origin);
-  spawnSlashWave(origin, camFwd, null);
-  // Melee instant-kill for enemies that are already in your face
   const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
   for(const e of enemies){ if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99; }
 }
@@ -2916,70 +2915,28 @@ function fireCannon(){
 //  SWORD SLASH WAVES  — velocity-driven crescent energy projectiles
 //
 //  Research sources:
-//   • Zelda Skyward Sword / BotW: swing velocity threshold → crescent wave
-//   • One Piece Pirate Warriors: blade arc projected as flying thin disc
-//   • VR rhythm games: tip delta position per frame → speed + direction
-//
-//  Implementation: track rightGrip world position each frame, compute
-//  velocity vector, fire a crescent TorusGeometry arc projectile when
-//  swing speed exceeds SLASH_SPEED_THRESHOLD m/s. Projectile travels
-//  in the exact swing direction, expands slightly, fades, hits enemies.
-// ════════════════════════════════════════════════════════════════
-
-function spawnSlashWave(origin, travelDir, swingDir){
-  const grp=new THREE.Group(); grp.position.copy(origin);
-  const fwd=travelDir.clone().normalize();
-
-  // Step 1 — face the crescent disc toward the travel direction
-  grp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,-1), fwd);
-
-  // Step 2 — rotate the crescent around the travel axis so its arc angle
-  // matches the physical swing plane (horizontal swing → crescent opens
-  // left-right; vertical swing → crescent opens up-down).
-  // This is the "created from movement" visual signature.
-  if(swingDir){
-    const swingInPlane=swingDir.clone()
-      .addScaledVector(fwd,-swingDir.dot(fwd)).normalize();
-    if(swingInPlane.lengthSq()>0.01){
-      const gUp   =new THREE.Vector3(0,1,0).applyQuaternion(grp.quaternion);
-      const gRight=new THREE.Vector3(1,0,0).applyQuaternion(grp.quaternion);
-      const angle =Math.atan2(swingInPlane.dot(gRight),swingInPlane.dot(gUp));
-      grp.rotateOnWorldAxis(fwd, angle);
-    }
-  }
-
-  // VOLT SABER colour palette — electric yellow
-  // Outer halo
-  const glowMat=new THREE.MeshBasicMaterial({color:0xffcc00,transparent:true,opacity:.60,
-    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.50,.072,5,28,Math.PI*1.65),glowMat));
-  // Core bright arc
-  const coreMat=new THREE.MeshBasicMaterial({color:0xffffaa,transparent:true,opacity:.98,
-    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  grp.add(new THREE.Mesh(new THREE.TorusGeometry(.40,.032,6,28,Math.PI*1.60),coreMat));
-  // Inner white-hot edge
-  const innerMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.85,
-    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  const inner=new THREE.Mesh(new THREE.TorusGeometry(.30,.016,5,22,Math.PI*1.40),innerMat);
-  inner.rotation.z=.2; grp.add(inner);
-
-  const pl=new THREE.PointLight(0xffee00,5,9); grp.add(pl);
-  scene.add(grp);
-  slashWaves.push({grp,coreMat,glowMat,innerMat,pl,
-    vel:fwd.multiplyScalar(80), age:0, maxAge:1.2});
-}
+// ── VOLT SABER: SLASH RIBBON SYSTEM ──────────────────────────────────────────
+// Tracks blade TIP world-position every ~16 ms. When tip speed exceeds
+// SLASH_SPEED_THRESHOLD the ribbon becomes visible, showing the last 0.5 s of
+// tip movement as a tapered electric-yellow arc in world space.
+// Any enemy whose centre passes within 2 m of any ribbon point takes 100% damage.
+// No projectile is spawned — the ribbon IS the slash.
 
 function updateSlashDetection(dt){
+  // Always count down active duration (so ribbon fades even when weapon switched)
+  _slashActiveDur=Math.max(0,_slashActiveDur-dt);
+
   if(currentWeapon!=='saber'||!rightGrip||!gameActive){
     gripPosInitialised=false;
-    if(tipGlowMat)  tipGlowMat.opacity  =Math.max(0,(tipGlowMat.opacity||0)-dt*4);
-    if(tipHaloMat)  tipHaloMat.opacity  =Math.max(0,(tipHaloMat.opacity||0)-dt*4);
+    if(tipGlowMat) tipGlowMat.opacity=Math.max(0,(tipGlowMat.opacity||0)-dt*4);
+    if(tipHaloMat) tipHaloMat.opacity=Math.max(0,(tipHaloMat.opacity||0)-dt*4);
+    updateSlashRibbon(_slashActiveDur/SLASH_WINDOW);
     return;
   }
   slashCooldown=Math.max(0,slashCooldown-dt);
-  _tipTrailTimer=Math.max(0,_tipTrailTimer-dt);
+  _slashSampleTimer=Math.max(0,_slashSampleTimer-dt);
 
-  // Track BLADE TIP, not the grip — the tip traces a larger arc per swing
+  // ── Track BLADE TIP (not grip) in dolly-local space for velocity ───────
   const trackNode=saberTip||rightGrip;
   const trackWorld=new THREE.Vector3();
   trackNode.getWorldPosition(trackWorld);
@@ -2992,54 +2949,104 @@ function updateSlashDetection(dt){
   const vz=(_currGripPos.z-_prevGripPos.z)/dt;
   const speed=Math.sqrt(vx*vx+vy*vy+vz*vz);
 
-  // Drive tip glow — quadratic ramp for dramatic near-threshold buildup
+  // ── Sample tip world position at ~60 fps ────────────────────────────────
+  if(_slashSampleTimer<=0){
+    _slashSampleTimer=0.016;
+    _slashPts.push(trackWorld.clone());
+    if(_slashPts.length>SLASH_HISTORY_SAMPLES) _slashPts.shift();
+  }
+
+  // ── Drive tip charge glow ───────────────────────────────────────────────
   const charge=Math.min(1,speed/SLASH_SPEED_THRESHOLD);
-  if(tipGlowMat)  tipGlowMat.opacity  =charge*charge*0.95;
-  if(tipHaloMat)  tipHaloMat.opacity  =charge*0.55;
+  if(tipGlowMat)  tipGlowMat.opacity =charge*charge*0.95;
+  if(tipHaloMat)  tipHaloMat.opacity =charge*0.55;
   if(tipGlowMesh) tipGlowMesh.scale.setScalar(1+charge*1.8);
   if(tipHaloMesh) tipHaloMesh.scale.setScalar(1+charge*1.2);
 
-  // Continuous tip trail while building speed — shows the blade arc
-  if(speed>SLASH_SPEED_THRESHOLD*0.40&&_tipTrailTimer<=0){
-    _tipTrailTimer=0.032;
-    spawnSaberTrail();
+  // ── Fast swing → activate ribbon ────────────────────────────────────────
+  if(speed>SLASH_SPEED_THRESHOLD){
+    _slashActiveDur=SLASH_WINDOW; // extend/reset ribbon lifetime
+    if(slashCooldown<=0){
+      slashCooldown=SLASH_COOLDOWN;
+      if(tipGlowMat) tipGlowMat.opacity=1.0;
+      if(tipHaloMat) tipHaloMat.opacity=0.85;
+      playSwingSound();
+      haptic('right',0.7,35);
+      spawnSaberTrail();
+    }
   }
 
-  if(speed>SLASH_SPEED_THRESHOLD&&slashCooldown<=0){
-    slashCooldown=SLASH_COOLDOWN;
-    if(tipGlowMat) tipGlowMat.opacity=1.0;
-    if(tipHaloMat) tipHaloMat.opacity=0.85;
-    const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-    const swingDir=new THREE.Vector3(vx,vy,vz).normalize().applyQuaternion(dolly.quaternion);
-    const origin=new THREE.Vector3();
-    trackNode.getWorldPosition(origin);
-    spawnSlashWave(origin, camFwd, swingDir);
-    playSwingSound();
-    haptic('right',0.7,35);
-    spawnSaberTrail();
-  }
+  updateSlashRibbon(_slashActiveDur/SLASH_WINDOW);
   _prevGripPos.copy(_currGripPos);
 }
 
-function updateSlashWaves(dt){
-  const done=[];
-  for(const sw of slashWaves){
-    sw.age+=dt;
-    sw.grp.position.addScaledVector(sw.vel,dt);
-    const life=Math.max(0,1-sw.age/sw.maxAge);
-    sw.coreMat.opacity=life*.95; sw.glowMat.opacity=life*.55; sw.innerMat.opacity=life*.7;
-    sw.pl.intensity=life*4;
-    const s=1+sw.age*.6; sw.grp.scale.setScalar(s);
+// Builds (or hides) the ribbon mesh from the recorded tip-position history.
+// fade: 0 = fully gone, 1 = full opacity. Called every frame from updateSlashDetection.
+function updateSlashRibbon(fade){
+  // Lazy-init the persistent ribbon mesh (needs scene to exist)
+  if(!_slashMat){
+    _slashMat=new THREE.MeshBasicMaterial({color:0xffee00,transparent:true,opacity:0,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+    _slashMesh=new THREE.Mesh(new THREE.BufferGeometry(),_slashMat);
+    scene.add(_slashMesh);
+  }
+
+  if(fade<0.02||_slashPts.length<2){ _slashMesh.visible=false; return; }
+  _slashMat.opacity=fade*0.92;
+
+  // ── Build tapered ribbon geometry from tip-position history ─────────────
+  // Each recorded point becomes two vertices offset perpendicular to the
+  // local movement direction. Width tapers from 0 (oldest) to W (newest)
+  // so the ribbon naturally narrows at its tail.
+  const pts=_slashPts;
+  const n=pts.length;
+  const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  const verts=new Float32Array(n*6); // 2 verts × 3 floats per sample
+  const idxArr=[];
+  const W=0.22; // max half-width in world units
+
+  for(let i=0;i<n;i++){
+    const p=pts[i];
+    // Direction of movement at this sample
+    let dir;
+    if(i<n-1) dir=new THREE.Vector3().subVectors(pts[i+1],p).normalize();
+    else       dir=new THREE.Vector3().subVectors(p,pts[i-1]).normalize();
+    // Perpendicular to movement in the camera's view plane
+    // → horizontal swings produce a vertical ribbon, vertical swings a horizontal one
+    let perp=new THREE.Vector3().crossVectors(dir,camFwd).normalize();
+    if(perp.lengthSq()<0.01) perp=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0)).normalize();
+    if(perp.lengthSq()<0.01) perp.set(1,0,0);
+    // Taper: newest sample (i = n-1) gets full width, oldest gets zero
+    const t=i/Math.max(1,n-1);
+    const w=W*Math.sqrt(t);
+    const b=i*6;
+    verts[b  ]=p.x-perp.x*w; verts[b+1]=p.y-perp.y*w; verts[b+2]=p.z-perp.z*w;
+    verts[b+3]=p.x+perp.x*w; verts[b+4]=p.y+perp.y*w; verts[b+5]=p.z+perp.z*w;
+  }
+  for(let i=0;i<n-1;i++){
+    const a=i*2,b=i*2+1,c=i*2+2,d=i*2+3;
+    idxArr.push(a,b,c, b,d,c);
+  }
+
+  const oldGeo=_slashMesh.geometry;
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
+  geo.setIndex(idxArr);
+  _slashMesh.geometry=geo;
+  oldGeo.dispose();
+  _slashMesh.visible=true;
+
+  // ── 100% damage to any enemy touching the slash ribbon ──────────────────
+  for(let pi=0;pi<pts.length;pi++){
     for(const e of enemies){
-      if(sw.grp.position.distanceTo(e.position)<1.8+sw.age*.3){
-        e.userData.hp=0; // 100% — instant kill
+      if(e.userData.hp>0&&e.position.distanceTo(pts[pi])<2.0){
+        e.userData.hp=0;
         triggerKillFlash(0xffee00);
       }
     }
-    if(sw.age>=sw.maxAge) done.push(sw);
   }
-  done.forEach(sw=>{scene.remove(sw.grp);slashWaves=slashWaves.filter(x=>x!==sw);});
 }
+
 
 function updateProjectiles(dt){
   // Grenades — gravity arc, explode on terrain
@@ -4614,7 +4621,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSlashWaves(dt); updateShotgunBolts(dt); }
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateShotgunBolts(dt); }
 
   // updateWeapon moved above
 
