@@ -130,7 +130,6 @@ let playerVY=0, isGrounded=true;
 const IO_GRAVITY=1.635;        // units/s²
 const JUMP_VEL=Math.sqrt(2*IO_GRAVITY*50); // launch speed to reach 50 units peak
 let enemies=[], pBolts=[], eBolts=[], explosions=[];
-let scatterBolts=[], _scatterTex=null; // Scatter Blaster 3-plane ball bolts
 let lavaLights=[], plumeList=[];
 let rockGroups=[];
 let volcanoLODs=[];
@@ -1144,7 +1143,6 @@ function startGame(){
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
   shotgunBolts.forEach(b=>scene.remove(b.grp)); shotgunBolts=[];
-  scatterBolts.forEach(b=>scene.remove(b.grp)); scatterBolts=[];
   slashWaves.forEach(sw=>scene.remove(sw.grp)); slashWaves=[];
   gripPosInitialised=false;
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
@@ -1225,7 +1223,6 @@ function fireWeapon(){
   else if(currentWeapon==='shotgun') { playPlayerShot(); fireShotgun(); }
   else if(currentWeapon==='grenade'){ playPlayerShot(); fireGrenade(); }
   else if(currentWeapon==='saber')  { fireSaber(); }
-  else if(currentWeapon==='scatter'){ playPlayerShot(); fireScatter(); }
   else if(currentWeapon==='rail')   { fireRail(); }
   else if(currentWeapon==='rocket') { playPlayerShot(); fireRocket(); }
   else if(currentWeapon==='dual')   { playPlayerShot(); fireDual(); }
@@ -2345,7 +2342,6 @@ const WEAPONS={
   shotgun:{name:'PLASMA SHOTGUN', ammo:40,       rate:.60,  col:0xff6600, pickupCol:0xff4400},
   grenade:{name:'GRENADE LAUNCH', ammo:15,       rate:.90,  col:0x44ff44, pickupCol:0x22cc22},
   saber:  {name:'VOLT SABER',     ammo:Infinity, rate:.35,  col:0xffff44, pickupCol:0xffdd00},
-  scatter:{name:'SCATTER BLSTR',  ammo:20,       rate:.80,  col:0xff44ff, pickupCol:0xcc22cc},
   rail:   {name:'RAIL SNIPER',    ammo:12,       rate:1.40, col:0x00ffff, pickupCol:0x00cccc},
   rocket: {name:'HOMING ROCKETS', ammo:8,        rate:1.80, col:0xff3300, pickupCol:0xff2200},
   dual:   {name:'DUAL ION GUNS',  ammo:100,      rate:.125, col:0xffcc00, pickupCol:0xffaa00},
@@ -2404,17 +2400,6 @@ function buildWeaponGeometry(type, parent){
     const l=new THREE.PointLight(new THREE.Color(0x44ffff),3,8);l.position.set(0,.45,0);sg.add(l);
     // Invisible tip marker — used by getWeaponTipOffset() to find blade tip in world space
     saberTip=new THREE.Object3D();saberTip.position.set(0,.80,0);sg.add(saberTip);
-  }
-  else if(type==='scatter'){
-    // Icosahedron body + 8 spike barrels
-    mk(new THREE.IcosahedronGeometry(.12,0),mat(0x220022,.3,.8,0xcc22cc,1.5));
-    const dirs=[[0,0,-1],[0,0,1],[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[.7,.7,0],[.7,-.7,0]];
-    dirs.forEach(d=>{
-      const b=new THREE.Mesh(new THREE.CylinderGeometry(.01,.015,.18,5),mat(0x440044,.2,.9,0xff44ff,.8));
-      b.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(...d).normalize());
-      b.position.set(d[0]*.13,d[1]*.13,d[2]*.13);parent.add(b);
-    });
-    const l=new THREE.PointLight(new THREE.Color(WEAPONS.scatter.pickupCol),2,6);parent.add(l);
   }
   else if(type==='rail'){
     // Very long barrel + scope + bipod
@@ -2519,9 +2504,9 @@ function equipWeapon(type){
 }
 
 // ── Pickup spawn & management ─────────────────────────────────────
-const PICKUP_TYPES=['shotgun','grenade','saber','scatter','rail','rocket','dual','flame','cannon'];
-// Ordered weapon list for X-button cycling (laser is index 0)
-const WEAPONS_ORDER=['laser','shotgun','grenade','saber','scatter','rail','rocket','dual','flame','cannon'];
+const PICKUP_TYPES=['shotgun','grenade','saber','rail','rocket','dual','flame','cannon'];
+// Ordered weapon list for X-button cycling (laser is index 0) — 9 weapons total
+const WEAPONS_ORDER=['laser','shotgun','grenade','saber','rail','rocket','dual','flame','cannon'];
 let currentWeaponIndex=0;
 
 function buildPickupMesh(type){
@@ -2782,112 +2767,6 @@ function fireSaber(){
     if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99;
   }
 }
-
-function fireScatter(){
-  const {mPos}=getBarrelData();
-  for(let i=0;i<16;i++){
-    const dir=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize();
-    spawnScatterBall(mPos,dir);
-  }
-}
-
-// ── Scatter Blaster: 3-plane criss-cross alpha-mapped purple ball ─────────
-// One shared white-circle texture used as alphaMap on all planes.
-// Three PlaneGeometry quads per ball, each rotated 90° from the last,
-// so the ball looks spherical from every angle.
-function _getScatterTex(){
-  if(_scatterTex) return _scatterTex;
-  const cv=document.createElement('canvas'); cv.width=cv.height=64;
-  const ctx=cv.getContext('2d');
-  const g=ctx.createRadialGradient(32,32,0,32,32,32);
-  g.addColorStop(0.00,'rgba(255,255,255,1.0)');
-  g.addColorStop(0.35,'rgba(255,255,255,0.85)');
-  g.addColorStop(0.70,'rgba(255,255,255,0.35)');
-  g.addColorStop(1.00,'rgba(255,255,255,0.00)');
-  ctx.fillStyle=g; ctx.fillRect(0,0,64,64);
-  _scatterTex=new THREE.CanvasTexture(cv);
-  return _scatterTex;
-}
-
-function spawnScatterBall(pos,dir){
-  const tex=_getScatterTex();
-  const S=0.30;  // outer plane diameter (world units)
-  const Si=0.13; // inner bright core diameter
-
-  // Purple outer glow — three planes at 0°/90°/90° offsets
-  const matOut=new THREE.MeshBasicMaterial({
-    color:0xcc44ff, alphaMap:tex, transparent:true,
-    opacity:0.80, depthWrite:false,
-    side:THREE.DoubleSide, blending:THREE.AdditiveBlending
-  });
-  // Bright near-white core — same three-plane layout, smaller
-  const matIn=new THREE.MeshBasicMaterial({
-    color:0xf0ccff, alphaMap:tex, transparent:true,
-    opacity:0.95, depthWrite:false,
-    side:THREE.DoubleSide, blending:THREE.AdditiveBlending
-  });
-
-  const geo =new THREE.PlaneGeometry(S,S);
-  const geoI=new THREE.PlaneGeometry(Si,Si);
-
-  // Plane A — sits in XY plane (default)
-  const pA=new THREE.Mesh(geo,matOut);
-  // Plane B — rotated 90° on Y → now in YZ plane
-  const pB=new THREE.Mesh(geo,matOut); pB.rotation.y=Math.PI/2;
-  // Plane C — rotated 90° on X → now in XZ plane
-  const pC=new THREE.Mesh(geo,matOut); pC.rotation.x=Math.PI/2;
-
-  const cA=new THREE.Mesh(geoI,matIn);
-  const cB=new THREE.Mesh(geoI,matIn); cB.rotation.y=Math.PI/2;
-  const cC=new THREE.Mesh(geoI,matIn); cC.rotation.x=Math.PI/2;
-
-  const grp=new THREE.Group();
-  grp.add(pA,pB,pC,cA,cB,cC);
-
-  // Subtle purple point light so the ball tints nearby surfaces
-  const light=new THREE.PointLight(0xcc44ff,2.5,7);
-  grp.add(light);
-
-  grp.position.copy(pos);
-  scene.add(grp);
-
-  // Store mats separately for per-frame opacity control
-  scatterBolts.push({grp,matOut,matIn,light,
-    dir:dir.clone().normalize(), age:0, maxAge:0.55, dmg:12});
-}
-
-function updateScatterBolts(dt){
-  const done=[];
-  for(const b of scatterBolts){
-    b.age+=dt;
-    b.grp.position.addScaledVector(b.dir,55*dt);
-
-    // Slow tumble — looks like a spinning orb
-    b.grp.rotation.x+=dt*2.8;
-    b.grp.rotation.y+=dt*3.5;
-
-    const life=Math.max(0,1-b.age/b.maxAge);
-    b.matOut.opacity=life*0.80;
-    b.matIn.opacity =life*0.95;
-    b.light.intensity=life*2.5;
-
-    // Terrain cull
-    const bRad=b.grp.position.length();
-    if(b.age>b.maxAge||bRad<getPlanetHeight(b.grp.position.clone().normalize())){
-      done.push(b); continue;
-    }
-    // Enemy hit
-    for(const e of enemies){
-      if(b.grp.position.distanceTo(e.position)<2.5){
-        e.userData.hp-=b.dmg;
-        triggerKillFlash(0xcc44ff);
-        done.push(b); break;
-      }
-    }
-  }
-  done.forEach(b=>{scene.remove(b.grp);scatterBolts=scatterBolts.filter(x=>x!==b);});
-}
-// ─────────────────────────────────────────────────────────────────────────────
 
 function fireRail(){
   const {mPos,bDir}=getBarrelData();
@@ -4638,7 +4517,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSlashWaves(dt); updateShotgunBolts(dt); updateScatterBolts(dt); }
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSlashWaves(dt); updateShotgunBolts(dt); }
 
   // updateWeapon moved above
 
