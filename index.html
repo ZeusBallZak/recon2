@@ -180,6 +180,7 @@ let gripPosInitialised=false;
 // Slash ribbon state (no projectile — the ribbon IS the slash)
 let _slashPts=[], _slashSampleTimer=0, _slashActiveDur=0;
 let _slashMesh=null, _slashMat=null;
+let launchedRibbons=[], _detachTimer=0.5; // launched ribbon projectiles
 let pickups=[];
 let flameCooldown=0;
 
@@ -1152,6 +1153,8 @@ function startGame(){
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
   shotgunBolts.forEach(b=>scene.remove(b.grp)); shotgunBolts=[];
   _slashPts=[]; _slashActiveDur=0; // reset slash ribbon
+  launchedRibbons.forEach(r=>{scene.remove(r.mesh);r.mesh.geometry.dispose();r.mat.dispose();});
+  launchedRibbons=[]; _detachTimer=0.5;
   gripPosInitialised=false;
   pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
   setTimeout(spawnInitialPickups, 1200);
@@ -2922,21 +2925,111 @@ function fireCannon(){
 // Any enemy whose centre passes within 2 m of any ribbon point takes 100% damage.
 // No projectile is spawned — the ribbon IS the slash.
 
+// ── VOLT SABER: SLASH RIBBON + DETACH SYSTEM ─────────────────────────────
+// 1. Blade tip positions are recorded every ~16 ms into _slashPts.
+// 2. The current ribbon is visible on the sword while the blade moves.
+// 3. Every 0.5 s the current ribbon DETACHES: its points are snapshotted,
+//    the snapshot is given a forward velocity, and it flies away as an
+//    independent mesh. _slashPts is then cleared so a fresh ribbon builds.
+// 4. Any enemy whose centre comes within 2 m of a launched ribbon point
+//    takes 100% damage (instant kill).
+
+// ── Shared geometry builder (used by both live ribbon and launched ribbons)
+// pts: THREE.Vector3[] oldest→newest. camFwd: direction used for ribbon width.
+function buildRibbonGeo(pts, camFwd){
+  const n=pts.length;
+  if(n<2) return null;
+  const verts=new Float32Array(n*6);
+  const idxArr=[];
+  const W=0.22; // max half-width in world units
+  for(let i=0;i<n;i++){
+    const p=pts[i];
+    let dir;
+    if(i<n-1) dir=new THREE.Vector3().subVectors(pts[i+1],p).normalize();
+    else       dir=new THREE.Vector3().subVectors(p,pts[i-1]).normalize();
+    let perp=new THREE.Vector3().crossVectors(dir,camFwd).normalize();
+    if(perp.lengthSq()<0.01) perp=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0)).normalize();
+    if(perp.lengthSq()<0.01) perp.set(1,0,0);
+    const t=i/Math.max(1,n-1);
+    const w=W*Math.sqrt(t); // taper: tail=0, tip=full
+    const b=i*6;
+    verts[b  ]=p.x-perp.x*w; verts[b+1]=p.y-perp.y*w; verts[b+2]=p.z-perp.z*w;
+    verts[b+3]=p.x+perp.x*w; verts[b+4]=p.y+perp.y*w; verts[b+5]=p.z+perp.z*w;
+  }
+  for(let i=0;i<n-1;i++){
+    const a=i*2,b=i*2+1,c=i*2+2,d=i*2+3;
+    idxArr.push(a,b,c,b,d,c);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
+  geo.setIndex(idxArr);
+  return geo;
+}
+
+// ── Detach current ribbon and launch it forward ──────────────────────────
+function launchSlashRibbon(pts, camFwd){
+  if(pts.length<3) return;
+  const mat=new THREE.MeshBasicMaterial({color:0xffee00,transparent:true,opacity:0.92,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+  const geo=buildRibbonGeo(pts,camFwd);
+  if(!geo){mat.dispose();return;}
+  const mesh=new THREE.Mesh(geo,mat);
+  scene.add(mesh);
+  // Velocity: camera forward at the moment of detach, speed 50 units/s
+  const vel=camFwd.clone().multiplyScalar(50);
+  // Store camFwd snapshot so ribbon shape stays consistent while traveling
+  launchedRibbons.push({pts:pts,vel:vel,fwd:camFwd.clone(),age:0,maxAge:1.4,mesh:mesh,mat:mat});
+}
+
+// ── Update all in-flight launched ribbons ────────────────────────────────
+function updateLaunchedRibbons(dt){
+  const done=[];
+  for(let ri=0;ri<launchedRibbons.length;ri++){
+    const r=launchedRibbons[ri];
+    r.age+=dt;
+    const life=Math.max(0,1-r.age/r.maxAge);
+    if(life<0.01){done.push(ri);continue;}
+    // Translate every point by velocity
+    for(let pi=0;pi<r.pts.length;pi++) r.pts[pi].addScaledVector(r.vel,dt);
+    // Rebuild geometry at new positions
+    r.mat.opacity=life*0.90;
+    const oldGeo=r.mesh.geometry;
+    const geo=buildRibbonGeo(r.pts,r.fwd);
+    if(geo){r.mesh.geometry=geo; oldGeo.dispose();}
+    // 100% damage on enemy contact
+    for(let pi=0;pi<r.pts.length;pi++){
+      for(let ei=0;ei<enemies.length;ei++){
+        const e=enemies[ei];
+        if(e.userData.hp>0&&e.position.distanceTo(r.pts[pi])<2.0){
+          e.userData.hp=0; triggerKillFlash(0xffee00);
+        }
+      }
+    }
+  }
+  // Remove done (iterate backwards to keep indices valid)
+  for(let i=done.length-1;i>=0;i--){
+    const r=launchedRibbons[done[i]];
+    scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mat.dispose();
+    launchedRibbons.splice(done[i],1);
+  }
+}
+
+// ── Per-frame: track tip, drive glow, update live ribbon, fire detach ─────
 function updateSlashDetection(dt){
-  // Always count down active duration (so ribbon fades even when weapon switched)
   _slashActiveDur=Math.max(0,_slashActiveDur-dt);
+  _detachTimer   =Math.max(0,_detachTimer-dt);
 
   if(currentWeapon!=='saber'||!rightGrip||!gameActive){
     gripPosInitialised=false;
     if(tipGlowMat) tipGlowMat.opacity=Math.max(0,(tipGlowMat.opacity||0)-dt*4);
     if(tipHaloMat) tipHaloMat.opacity=Math.max(0,(tipHaloMat.opacity||0)-dt*4);
-    updateSlashRibbon(_slashActiveDur/SLASH_WINDOW);
+    updateSlashRibbon(0);
     return;
   }
-  slashCooldown=Math.max(0,slashCooldown-dt);
+  slashCooldown   =Math.max(0,slashCooldown-dt);
   _slashSampleTimer=Math.max(0,_slashSampleTimer-dt);
 
-  // ── Track BLADE TIP (not grip) in dolly-local space for velocity ───────
+  // Track blade tip in dolly-local space for accurate velocity measurement
   const trackNode=saberTip||rightGrip;
   const trackWorld=new THREE.Vector3();
   trackNode.getWorldPosition(trackWorld);
@@ -2949,23 +3042,22 @@ function updateSlashDetection(dt){
   const vz=(_currGripPos.z-_prevGripPos.z)/dt;
   const speed=Math.sqrt(vx*vx+vy*vy+vz*vz);
 
-  // ── Sample tip world position at ~60 fps ────────────────────────────────
-  if(_slashSampleTimer<=0){
+  // Record tip position when blade is moving (any perceptible movement)
+  if(_slashSampleTimer<=0&&speed>0.5){
     _slashSampleTimer=0.016;
     _slashPts.push(trackWorld.clone());
     if(_slashPts.length>SLASH_HISTORY_SAMPLES) _slashPts.shift();
   }
 
-  // ── Drive tip charge glow ───────────────────────────────────────────────
+  // Drive tip charge glow
   const charge=Math.min(1,speed/SLASH_SPEED_THRESHOLD);
   if(tipGlowMat)  tipGlowMat.opacity =charge*charge*0.95;
   if(tipHaloMat)  tipHaloMat.opacity =charge*0.55;
   if(tipGlowMesh) tipGlowMesh.scale.setScalar(1+charge*1.8);
   if(tipHaloMesh) tipHaloMesh.scale.setScalar(1+charge*1.2);
 
-  // ── Fast swing → activate ribbon ────────────────────────────────────────
   if(speed>SLASH_SPEED_THRESHOLD){
-    _slashActiveDur=SLASH_WINDOW; // extend/reset ribbon lifetime
+    _slashActiveDur=SLASH_WINDOW;
     if(slashCooldown<=0){
       slashCooldown=SLASH_COOLDOWN;
       if(tipGlowMat) tipGlowMat.opacity=1.0;
@@ -2976,72 +3068,43 @@ function updateSlashDetection(dt){
     }
   }
 
+  // ── Every 0.5 s: detach current ribbon and fire it forward ───────────
+  if(_detachTimer<=0){
+    _detachTimer=0.5;
+    if(_slashPts.length>=3){
+      const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+      // Clone points so launched ribbon owns its own copy
+      const snapshot=[];
+      for(let i=0;i<_slashPts.length;i++) snapshot.push(_slashPts[i].clone());
+      launchSlashRibbon(snapshot,camFwd);
+      _slashPts=[]; // start fresh ribbon on the sword
+    }
+  }
+
   updateSlashRibbon(_slashActiveDur/SLASH_WINDOW);
   _prevGripPos.copy(_currGripPos);
 }
 
-// Builds (or hides) the ribbon mesh from the recorded tip-position history.
-// fade: 0 = fully gone, 1 = full opacity. Called every frame from updateSlashDetection.
+// Live ribbon still attached to the sword (fades when not swinging fast)
 function updateSlashRibbon(fade){
-  // Lazy-init the persistent ribbon mesh (needs scene to exist)
   if(!_slashMat){
     _slashMat=new THREE.MeshBasicMaterial({color:0xffee00,transparent:true,opacity:0,
       blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
     _slashMesh=new THREE.Mesh(new THREE.BufferGeometry(),_slashMat);
     scene.add(_slashMesh);
   }
-
-  if(fade<0.02||_slashPts.length<2){ _slashMesh.visible=false; return; }
+  if(fade<0.02||_slashPts.length<2){_slashMesh.visible=false;return;}
   _slashMat.opacity=fade*0.92;
-
-  // ── Build tapered ribbon geometry from tip-position history ─────────────
-  // Each recorded point becomes two vertices offset perpendicular to the
-  // local movement direction. Width tapers from 0 (oldest) to W (newest)
-  // so the ribbon naturally narrows at its tail.
-  const pts=_slashPts;
-  const n=pts.length;
   const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  const verts=new Float32Array(n*6); // 2 verts × 3 floats per sample
-  const idxArr=[];
-  const W=0.22; // max half-width in world units
-
-  for(let i=0;i<n;i++){
-    const p=pts[i];
-    // Direction of movement at this sample
-    let dir;
-    if(i<n-1) dir=new THREE.Vector3().subVectors(pts[i+1],p).normalize();
-    else       dir=new THREE.Vector3().subVectors(p,pts[i-1]).normalize();
-    // Perpendicular to movement in the camera's view plane
-    // → horizontal swings produce a vertical ribbon, vertical swings a horizontal one
-    let perp=new THREE.Vector3().crossVectors(dir,camFwd).normalize();
-    if(perp.lengthSq()<0.01) perp=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0)).normalize();
-    if(perp.lengthSq()<0.01) perp.set(1,0,0);
-    // Taper: newest sample (i = n-1) gets full width, oldest gets zero
-    const t=i/Math.max(1,n-1);
-    const w=W*Math.sqrt(t);
-    const b=i*6;
-    verts[b  ]=p.x-perp.x*w; verts[b+1]=p.y-perp.y*w; verts[b+2]=p.z-perp.z*w;
-    verts[b+3]=p.x+perp.x*w; verts[b+4]=p.y+perp.y*w; verts[b+5]=p.z+perp.z*w;
-  }
-  for(let i=0;i<n-1;i++){
-    const a=i*2,b=i*2+1,c=i*2+2,d=i*2+3;
-    idxArr.push(a,b,c, b,d,c);
-  }
-
   const oldGeo=_slashMesh.geometry;
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
-  geo.setIndex(idxArr);
-  _slashMesh.geometry=geo;
-  oldGeo.dispose();
+  const geo=buildRibbonGeo(_slashPts,camFwd);
+  if(geo){_slashMesh.geometry=geo; oldGeo.dispose();}
   _slashMesh.visible=true;
-
-  // ── 100% damage to any enemy touching the slash ribbon ──────────────────
-  for(let pi=0;pi<pts.length;pi++){
+  // Live ribbon also damages enemies on contact
+  for(let pi=0;pi<_slashPts.length;pi++){
     for(const e of enemies){
-      if(e.userData.hp>0&&e.position.distanceTo(pts[pi])<2.0){
-        e.userData.hp=0;
-        triggerKillFlash(0xffee00);
+      if(e.userData.hp>0&&e.position.distanceTo(_slashPts[pi])<2.0){
+        e.userData.hp=0; triggerKillFlash(0xffee00);
       }
     }
   }
@@ -4621,7 +4684,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateShotgunBolts(dt); }
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
 
   // updateWeapon moved above
 
