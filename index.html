@@ -1991,11 +1991,11 @@ function updateWaves(now){
       if(!_clearPromptSent){_clearPromptSent=true;speak('Clear remaining enemies to begin break.');}
     } else {
       _clearPromptSent=false;
-      waveBreakUntil=now+30;
+      waveBreakUntil=now+20;
       spawnBreakPickups();
       if(!upgradePhase) showUpgradeCards();
       const label=wave<12?'Wave '+wave+' complete.':'Final wave complete.';
-      speak(label+' 30 second break.');
+      speak(label+' 20 second break.');
       if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,31000);
     }
   }
@@ -4166,18 +4166,23 @@ function updateUpgradeCards(dt){
   }
 
   // ── Check player bullet proximity (shoot to select) ───────────────
-  // Checks all active player projectile types; first hit wins.
-  const HIT_R=1.0; // hit radius in world units
-  const boltArrays=[pBolts,shotgunBolts];
-  for(let ai=0;ai<boltArrays.length;ai++){
-    const arr=boltArrays[ai];
-    for(let bi=0;bi<arr.length;bi++){
-      const bpos=arr[bi].grp&&arr[bi].grp.position;
-      if(!bpos) continue;
-      for(let ci=0;ci<upgradeCards.length;ci++){
-        if(bpos.distanceTo(upgradeCards[ci].mesh.position)<HIT_R){
-          selectUpgradeCard(upgradeCards[ci]); return;
-        }
+  // pBolts stores raw THREE.Group; shotgunBolts stores {grp,...} objects.
+  const HIT_R=1.0;
+  for(let bi=0;bi<pBolts.length;bi++){
+    const bpos=pBolts[bi].position; // pBolts IS the group
+    if(!bpos) continue;
+    for(let ci=0;ci<upgradeCards.length;ci++){
+      if(bpos.distanceTo(upgradeCards[ci].mesh.position)<HIT_R){
+        selectUpgradeCard(upgradeCards[ci]); return;
+      }
+    }
+  }
+  for(let bi=0;bi<shotgunBolts.length;bi++){
+    const bpos=shotgunBolts[bi].grp&&shotgunBolts[bi].grp.position; // shotgunBolts wraps in {grp}
+    if(!bpos) continue;
+    for(let ci=0;ci<upgradeCards.length;ci++){
+      if(bpos.distanceTo(upgradeCards[ci].mesh.position)<HIT_R){
+        selectUpgradeCard(upgradeCards[ci]); return;
       }
     }
   }
