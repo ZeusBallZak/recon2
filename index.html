@@ -1969,7 +1969,7 @@ function showMissionComplete(){
 }
 
 function updateWaves(now){
-  if(!gameActive||upgradePhase||gameEnded)return;
+  if(!gameActive||gameEnded)return; // upgradePhase removed — break timer must keep running
 
   // ── Initialise wave 1 spawn window on first call ─────────────────
   if(waveSpawnUntil===0) waveSpawnUntil=now+60;
@@ -1977,7 +1977,8 @@ function updateWaves(now){
   const maxE=Math.min(7,3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
 
   // ── Spawn enemies during the 1-minute active window ──────────────
-  if(now<waveSpawnUntil&&enemies.length<maxE&&now-lastSpawn>spawnI){
+  // (blocked during upgrade-card selection so the player can choose in peace)
+  if(!upgradePhase&&now<waveSpawnUntil&&enemies.length<maxE&&now-lastSpawn>spawnI){
     spawnEnemy(); lastSpawn=now;
   }
 
