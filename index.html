@@ -2000,9 +2000,9 @@ function updateWaves(now){
     }
   }
 
-  // ── Break ended → hide cards, advance or finish ───────────────────
+  // ── Break ended → auto-select card if not yet chosen, advance wave ──
   if(waveBreakUntil>waveSpawnUntil&&now>=waveBreakUntil){
-    clearUpgradeCards();
+    autoSelectUpgradeCard(); // applies a random card if player hasn't chosen yet
     if(wave<12){
       wave++;
       waveSpawnUntil=now+60;  // fresh 1-minute window
@@ -4116,7 +4116,7 @@ function showUpgradeCards(){
     ctx.fillStyle='rgba(200,220,255,.7)';ctx.font='15px monospace';
     ctx.fillText(up.desc,160,100);
     ctx.fillStyle='rgba(80,180,255,.45)';ctx.font='13px monospace';
-    ctx.fillText('REACH OUT TO SELECT',160,155);
+    ctx.fillText('SHOOT OR REACH TO SELECT',160,155);
     const tex=new THREE.CanvasTexture(cv);
     const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
     const mesh=new THREE.Mesh(new THREE.PlaneGeometry(1.2,.75),mat);
@@ -4129,30 +4129,57 @@ function showUpgradeCards(){
   speak('Select an upgrade');
 }
 
+// Apply one upgrade card and clear all cards from the scene
+function selectUpgradeCard(card){
+  card.upgrade.fn();
+  upgradeCards.forEach(cc=>{scene.remove(cc.mesh);cc.tex.dispose();cc.mat.dispose();});
+  upgradeCards=[];
+  upgradePhase=false;pendingUpgrade=false;
+  haptic('right',1.0,200);haptic('left',1.0,200);
+  speak('Upgrade applied');
+  drawHUD();
+}
+
+// Called at break-end: pick a random remaining card and apply it
+function autoSelectUpgradeCard(){
+  if(upgradeCards.length){
+    const pick=upgradeCards[Math.floor(Math.random()*upgradeCards.length)];
+    selectUpgradeCard(pick);
+  } else {
+    clearUpgradeCards();
+  }
+}
+
 function updateUpgradeCards(dt){
   if(!upgradePhase||!upgradeCards.length)return;
   const rightPos=rightGrip?new THREE.Vector3().setFromMatrixPosition(rightGrip.matrixWorld):null;
   const leftPos=leftGrip?new THREE.Vector3().setFromMatrixPosition(leftGrip.matrixWorld):null;
   for(const c of upgradeCards) c.age+=dt;
-  // Check hand proximity
+
+  // ── Check hand proximity (reach out to select) ────────────────────
   for(const c of upgradeCards){
     const close=
       (rightPos&&rightPos.distanceTo(c.mesh.position)<.65)||
       (leftPos&&leftPos.distanceTo(c.mesh.position)<.65);
-    if(close){
-      // Selected!
-      c.upgrade.fn();
-      // Clear all cards
-      upgradeCards.forEach(cc=>{scene.remove(cc.mesh);cc.tex.dispose();cc.mat.dispose();});
-      upgradeCards=[];
-      upgradePhase=false;pendingUpgrade=false;
-      haptic('right',1.0,200);haptic('left',1.0,200);
-      speak('Upgrade applied');
-      drawHUD();
-      return;
+    if(close){ selectUpgradeCard(c); return; }
+    c.mesh.position.y+=Math.sin(c.age*1.8)*.0008; // gentle float
+  }
+
+  // ── Check player bullet proximity (shoot to select) ───────────────
+  // Checks all active player projectile types; first hit wins.
+  const HIT_R=1.0; // hit radius in world units
+  const boltArrays=[pBolts,shotgunBolts];
+  for(let ai=0;ai<boltArrays.length;ai++){
+    const arr=boltArrays[ai];
+    for(let bi=0;bi<arr.length;bi++){
+      const bpos=arr[bi].grp&&arr[bi].grp.position;
+      if(!bpos) continue;
+      for(let ci=0;ci<upgradeCards.length;ci++){
+        if(bpos.distanceTo(upgradeCards[ci].mesh.position)<HIT_R){
+          selectUpgradeCard(upgradeCards[ci]); return;
+        }
+      }
     }
-    // Gentle float
-    c.mesh.position.y+=Math.sin(c.age*1.8)*.0008;
   }
 }
 
