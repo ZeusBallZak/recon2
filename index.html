@@ -106,6 +106,8 @@ let damageSphere;
 let gameActive=false, gameOverState=false;
 let health=100, maxHealth=100, shield=100, maxShield=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0, waveBreakUntil=0;
+let waveSpawnUntil=0;  // clock.elapsedTime when this wave's 1-min spawn window closes
+let gameEnded=false;   // true after wave 12 complete and all enemies cleared
 // ── Combo multiplier ─────────────────────────────────────────────
 let comboCount=0, comboTimer=0, comboMult=1;
 // ── Boss system ──────────────────────────────────────────────────
@@ -1151,6 +1153,7 @@ function startGame(){
   setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;waveBreakUntil=0;
+  waveSpawnUntil=0; gameEnded=false;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
   currentWeaponIndex=0;
@@ -1917,24 +1920,100 @@ function updateLava(){
 }
 
 // ── Wave escalation ────────────────────────────────────────────────
+// ── Spawn 10 weapon pickups near the player at the start of each inter-wave break ──
+function spawnBreakPickups(){
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const playerDir=camPos.clone().normalize();
+  const arb=Math.abs(playerDir.y)<0.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);
+  const t1=new THREE.Vector3().crossVectors(playerDir,arb).normalize();
+  const t2=new THREE.Vector3().crossVectors(playerDir,t1);
+  for(let i=0;i<10;i++){
+    const ang=(i/10)*Math.PI*2+Math.random()*0.5;
+    const dist=15+Math.random()*35;        // 15–50 m arc from player
+    const off=dist/PLANET_R;              // convert to sphere-surface angular offset
+    const dir=playerDir.clone()
+      .addScaledVector(t1,Math.cos(ang)*off)
+      .addScaledVector(t2,Math.sin(ang)*off)
+      .normalize();
+    spawnPickup(PICKUP_TYPES[i%PICKUP_TYPES.length],dir);
+  }
+}
+
+// ── End-game billboard: shown after wave 12 all-clear ────────────────────────
+function showMissionComplete(){
+  const cv=document.createElement('canvas'); cv.width=512; cv.height=256;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='rgba(0,12,35,.96)'; ctx.fillRect(0,0,512,256);
+  ctx.strokeStyle='rgba(80,220,255,.8)'; ctx.lineWidth=3; ctx.strokeRect(6,6,500,244);
+  ctx.textAlign='center';
+  ctx.fillStyle='rgba(80,255,180,.95)'; ctx.font='bold 26px monospace';
+  ctx.fillText('NO MORE ENEMIES DETECTED',256,68);
+  ctx.fillStyle='rgba(200,235,255,.75)'; ctx.font='20px monospace';
+  ctx.fillText('SECONDARY MISSION:',256,120);
+  ctx.fillStyle='rgba(255,215,60,.95)'; ctx.font='bold 28px monospace';
+  ctx.fillText('EXPLORE THE MOON',256,168);
+  ctx.fillStyle='rgba(100,170,255,.55)'; ctx.font='14px monospace';
+  ctx.fillText('IO · JUPITER SYSTEM · 2184 CE',256,218);
+  const tex=new THREE.CanvasTexture(cv);
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(3.8,1.9),mat);
+  const fwd=new THREE.Vector3(); camera.getWorldDirection(fwd);
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  mesh.position.copy(camPos).addScaledVector(fwd,5);
+  mesh.position.y=camPos.y+0.4;
+  mesh.lookAt(camPos);
+  scene.add(mesh);
+  haptic('right',1.0,600); haptic('left',1.0,600);
+  speak('No more enemies detected. Secondary mission: explore the moon.');
+}
+
 function updateWaves(now){
-  if(!gameActive||upgradePhase)return;
-  const maxE=Math.min(7, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
-  // Block spawning during the 10-second inter-wave break
-  if(now>=waveBreakUntil && enemies.length<maxE && now-lastSpawn>spawnI){
-    spawnEnemy();lastSpawn=now;
+  if(!gameActive||upgradePhase||gameEnded)return;
+
+  // ── Initialise wave 1 spawn window on first call ─────────────────
+  if(waveSpawnUntil===0) waveSpawnUntil=now+60;
+
+  const maxE=Math.min(7,3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
+
+  // ── Spawn enemies during the 1-minute active window ──────────────
+  if(now<waveSpawnUntil&&enemies.length<maxE&&now-lastSpawn>spawnI){
+    spawnEnemy(); lastSpawn=now;
   }
-  if(score>=waveThresh&&wave<12){
-    wave++;waveThresh=score+500*wave;
-    showWaveBanner(wave);drawHUD();
-    // 10-second break — clear remaining enemies' spawn timer so none appear
-    waveBreakUntil=now+10;
-    speak('Wave '+wave+'. 10 second break.');
-    // Boss every 5th wave (after the break)
-    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,11500);
-    pendingUpgrade=true;
+
+  // ── Spawn window just closed → start 30-second break ─────────────
+  // Detected when waveBreakUntil hasn't been set for this wave yet
+  // (waveBreakUntil ≤ waveSpawnUntil means break not started)
+  if(now>=waveSpawnUntil&&waveBreakUntil<=waveSpawnUntil){
+    waveBreakUntil=now+30;
+    // Spawn 10 bonus pickups near player right at break start
+    spawnBreakPickups();
+    // Show upgrade cards (30-second selection window)
+    if(!upgradePhase) showUpgradeCards();
+    const label=wave<12?'Wave '+wave+' complete.':'Final wave complete.';
+    speak(label+' 30 second break.');
+    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,31000);
   }
-  if(pendingUpgrade&&!upgradePhase&&enemies.length===0) showUpgradeCards();
+
+  // ── Break ended → hide cards, advance or finish ───────────────────
+  if(waveBreakUntil>waveSpawnUntil&&now>=waveBreakUntil){
+    clearUpgradeCards();
+    if(wave<12){
+      wave++;
+      waveSpawnUntil=now+60;  // fresh 1-minute window
+      waveBreakUntil=0;       // clear break sentinel
+      showWaveBanner(wave); drawHUD();
+      speak('Wave '+wave);
+    }
+    // After wave 12 break: check for all-clear
+    if(wave>=12&&enemies.length===0&&!gameEnded){
+      gameEnded=true; showMissionComplete();
+    }
+  }
+
+  // ── Post-wave-12 all-clear: enemies may survive past the break ────
+  if(wave>=12&&now>=waveBreakUntil&&waveBreakUntil>waveSpawnUntil&&!gameEnded&&enemies.length===0){
+    gameEnded=true; showMissionComplete();
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
