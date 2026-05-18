@@ -150,6 +150,11 @@ const DASH_DUR=DASH_DIST/DASH_SPEED; // 0.2 s
 const DASH_COOLDOWN=2.0;// seconds between dashes
 const DASH_STOP_R=2.0;  // enemy proximity that cancels dash
 const _dashDir=new THREE.Vector3(); // normalised forward direction of dash
+// ── GC-free scratch objects — reused each frame instead of new THREE.* in hot paths ──
+// Rule: NEVER store these in an array/object or pass across async/setTimeout boundaries.
+const _sv0=new THREE.Vector3(),_sv1=new THREE.Vector3(),_sv2=new THREE.Vector3();
+const _sv3=new THREE.Vector3(),_sv4=new THREE.Vector3(),_sv5=new THREE.Vector3();
+const _sq0=new THREE.Quaternion(),_sq1=new THREE.Quaternion();
 let fireCooldown=0, mfTimer=0;
 let kickZ=0, kickRX=0; // weapon recoil springs
 
@@ -374,7 +379,7 @@ function init(){
   // ── WebXR ─────────────────────────────────────────────────────
   renderer.xr.enabled=true;
   // Quest 3 native res is managed by the runtime; 1.0 = full native eye buffer
-  try{ renderer.xr.setFramebufferScaleFactor(1.0); }catch(e){}
+  try{ renderer.xr.setFramebufferScaleFactor(0.9); }catch(e){}
 
   scene=new THREE.Scene();
   camera=new THREE.PerspectiveCamera(80,innerWidth/innerHeight,0.05,5000);
@@ -1405,9 +1410,9 @@ function updateEnemies(dt){
     // but the enemy mesh faces +Z, so rotate 180° around the surface normal.
     const lookTarget=e.position.clone().add(towardPlayer.multiplyScalar(5));
     const lookMat=new THREE.Matrix4().lookAt(e.position,lookTarget,eUp);
-    const targetQ=new THREE.Quaternion().setFromRotationMatrix(lookMat);
-    targetQ.multiply(new THREE.Quaternion().setFromAxisAngle(eUp,Math.PI));
-    e.quaternion.slerp(targetQ,0.08);
+    _sq0.setFromRotationMatrix(lookMat);
+    _sq0.multiply(_sq1.setFromAxisAngle(eUp,Math.PI));
+    e.quaternion.slerp(_sq0,0.08);
 
     // ── LOD switching — only triggers on level change ──────────────
     const newLOD=dist<25?0:dist<60?1:dist<120?2:3;
@@ -1683,23 +1688,20 @@ function updatePlayer(dt){
   }
   if(snapCooldown>0)snapCooldown-=dt;
 
-  // ── Dolly orientation — align +Y with surface normal ─────────────
+  // ── Dolly orientation — align +Y with surface normal (scratch: _sv0-_sv3, _sq0) ──
   {
-    const sN=dolly.position.clone().normalize();
-    const dU=new THREE.Vector3(0,1,0).applyQuaternion(dolly.quaternion);
-    const ang=dU.angleTo(sN);
+    _sv0.copy(dolly.position).normalize();               // sN
+    _sv1.set(0,1,0).applyQuaternion(dolly.quaternion);  // dU
+    const ang=_sv1.angleTo(_sv0);
     if(ang>0.0015){
-      const ax=new THREE.Vector3().crossVectors(dU,sN);
-      if(ax.lengthSq()>1e-8){
-        // Normal case: rotate around cross-product axis
-        const step=Math.min(ang,4.5*dt);
-        dolly.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(ax.normalize(),step));
+      _sv2.crossVectors(_sv1,_sv0);                      // ax
+      if(_sv2.lengthSq()>1e-8){
+        dolly.quaternion.premultiply(_sq0.setFromAxisAngle(_sv2.normalize(),Math.min(ang,4.5*dt)));
       } else {
-        // Degenerate case (nearly 180°): pick an arbitrary perpendicular axis
-        const perp=new THREE.Vector3(1,0,0);
-        if(Math.abs(sN.dot(perp))>.9) perp.set(0,0,1);
-        const safeAx=new THREE.Vector3().crossVectors(sN,perp).normalize();
-        dolly.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(safeAx,Math.min(ang,4.5*dt)));
+        _sv3.set(1,0,0);
+        if(Math.abs(_sv0.dot(_sv3))>.9) _sv3.set(0,0,1);
+        _sv3.crossVectors(_sv0,_sv3).normalize();        // safeAx
+        dolly.quaternion.premultiply(_sq0.setFromAxisAngle(_sv3,Math.min(ang,4.5*dt)));
       }
     }
   }
@@ -1741,39 +1743,35 @@ function updatePlayer(dt){
     }
   }
 
-  // ── Volcano collision — analytical closest-point-on-cone ──────────
+  // ── Volcano collision — analytical closest-point-on-cone (scratch _sv0-_sv4) ──
   const PLAYER_R=1.2;
-  const playerDir=dolly.position.clone().normalize();
+  _sv0.copy(dolly.position).normalize(); // playerDir
   const playerRad=dolly.position.length();
 
   for(const vc of volcanoColliders){
-    const approxArc=playerDir.angleTo(vc.axis)*PLANET_R;
+    const approxArc=_sv0.angleTo(vc.axis)*PLANET_R;
     if(approxArc>vc.r+PLAYER_R+6) continue;
     const htAboveBase=playerRad-vc.baseR;
     if(htAboveBase<22||htAboveBase>vc.h+PLAYER_R+2) continue;
 
-    // ── Volume escape: is the player INSIDE the cone? ─────────────
-    // If so, push directly outward from the cone axis — this is the
-    // most reliable escape from a stuck state regardless of how deeply
-    // the player is embedded.
-    const toP=new THREE.Vector3().subVectors(dolly.position,vc.basePos);
-    const tClamped=Math.max(0,Math.min(vc.h,toP.dot(vc.axis)));
-    const ringCentre=vc.basePos.clone().addScaledVector(vc.axis,tClamped);
+    _sv1.subVectors(dolly.position,vc.basePos);               // toP
+    const tClamped=Math.max(0,Math.min(vc.h,_sv1.dot(vc.axis)));
+    _sv2.copy(vc.basePos).addScaledVector(vc.axis,tClamped);  // ringCentre
     const rAtT=vc.r*(1-tClamped/vc.h);
-    const radialFromAxis=new THREE.Vector3().subVectors(dolly.position,ringCentre);
-    radialFromAxis.addScaledVector(vc.axis,-radialFromAxis.dot(vc.axis));
-    const radialDist=radialFromAxis.length();
+    _sv3.subVectors(dolly.position,_sv2);                      // radialFromAxis
+    _sv3.addScaledVector(vc.axis,-_sv3.dot(vc.axis));
+    const radialDist=_sv3.length();
     if(radialDist<rAtT){
       // Player is inside the cone volume — expel immediately
-      const expelDir=radialDist>0.001
-        ? radialFromAxis.clone().normalize()
-        : new THREE.Vector3().subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis))).normalize();
-      // Move to just outside the cone surface at this ring
-      dolly.position.copy(ringCentre).addScaledVector(expelDir,rAtT+PLAYER_R+0.2);
-      // Re-snap to terrain
-      const ed=dolly.position.clone().normalize();
-      dolly.position.setLength(getPlanetHeight(ed));
-      continue; // already resolved, skip surface test
+      if(radialDist>0.001){
+        _sv4.copy(_sv3).normalize();                           // expelDir
+      } else {
+        _sv4.subVectors(_sv0,vc.axis.clone().multiplyScalar(_sv0.dot(vc.axis))).normalize();
+      }
+      dolly.position.copy(_sv2).addScaledVector(_sv4,rAtT+PLAYER_R+0.2);
+      _sv2.copy(dolly.position).normalize();
+      dolly.position.setLength(getPlanetHeight(_sv2));
+      continue;
     }
 
     // ── Surface proximity push ─────────────────────────────────────
@@ -1921,7 +1919,7 @@ function updateLava(){
 // ── Wave escalation ────────────────────────────────────────────────
 function updateWaves(now){
   if(!gameActive||upgradePhase)return;
-  const maxE=Math.min(9, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
+  const maxE=Math.min(7, 3+wave*2), spawnI=Math.max(.8,3.5-wave*.25);
   // Block spawning during the 10-second inter-wave break
   if(now>=waveBreakUntil && enemies.length<maxE && now-lastSpawn>spawnI){
     spawnEnemy();lastSpawn=now;
@@ -2941,20 +2939,20 @@ function buildRibbonGeo(pts, camFwd){
   if(n<2) return null;
   const verts=new Float32Array(n*6);
   const idxArr=[];
-  const W=0.22; // max half-width in world units
+  const W=0.22;
   for(let i=0;i<n;i++){
     const p=pts[i];
-    let dir;
-    if(i<n-1) dir=new THREE.Vector3().subVectors(pts[i+1],p).normalize();
-    else       dir=new THREE.Vector3().subVectors(p,pts[i-1]).normalize();
-    let perp=new THREE.Vector3().crossVectors(dir,camFwd).normalize();
-    if(perp.lengthSq()<0.01) perp=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,0)).normalize();
-    if(perp.lengthSq()<0.01) perp.set(1,0,0);
+    // _sv0=dir, _sv1=perp — scratch vectors, zero allocation
+    if(i<n-1) _sv0.subVectors(pts[i+1],p).normalize();
+    else       _sv0.subVectors(p,pts[i-1]).normalize();
+    _sv1.crossVectors(_sv0,camFwd).normalize();
+    if(_sv1.lengthSq()<0.01) _sv1.crossVectors(_sv0,_sv2.set(0,1,0)).normalize();
+    if(_sv1.lengthSq()<0.01) _sv1.set(1,0,0);
     const t=i/Math.max(1,n-1);
-    const w=W*Math.sqrt(t); // taper: tail=0, tip=full
+    const w=W*Math.sqrt(t);
     const b=i*6;
-    verts[b  ]=p.x-perp.x*w; verts[b+1]=p.y-perp.y*w; verts[b+2]=p.z-perp.z*w;
-    verts[b+3]=p.x+perp.x*w; verts[b+4]=p.y+perp.y*w; verts[b+5]=p.z+perp.z*w;
+    verts[b  ]=p.x-_sv1.x*w; verts[b+1]=p.y-_sv1.y*w; verts[b+2]=p.z-_sv1.z*w;
+    verts[b+3]=p.x+_sv1.x*w; verts[b+4]=p.y+_sv1.y*w; verts[b+5]=p.z+_sv1.z*w;
   }
   for(let i=0;i<n-1;i++){
     const a=i*2,b=i*2+1,c=i*2+2,d=i*2+3;
@@ -2967,56 +2965,68 @@ function buildRibbonGeo(pts, camFwd){
 }
 
 // ── Detach current ribbon and launch it forward ──────────────────────────
+// OPTIMISATION: the geometry is built once at launch in LOCAL space (relative
+// to the ribbon centroid). In-flight updates only translate mesh.position —
+// zero geometry rebuilds, zero per-frame Vector3 allocations.
 function launchSlashRibbon(pts, camFwd){
   if(pts.length<3) return;
+  // Compute centroid (launch reference point) using scratch _sv0
+  _sv0.set(0,0,0);
+  for(let i=0;i<pts.length;i++) _sv0.add(pts[i]);
+  _sv0.divideScalar(pts.length);
+  // Convert pts to local space in-place (pts[] are already a deep copy)
+  let halfLen=0;
+  for(let i=0;i<pts.length;i++){
+    pts[i].sub(_sv0);
+    const L=pts[i].length(); if(L>halfLen) halfLen=L;
+  }
   const mat=new THREE.MeshBasicMaterial({color:0xffee00,transparent:true,opacity:0.92,
     blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
   const geo=buildRibbonGeo(pts,camFwd);
   if(!geo){mat.dispose();return;}
   const mesh=new THREE.Mesh(geo,mat);
+  mesh.position.copy(_sv0); // world-space start position
   scene.add(mesh);
-  // Velocity: direction the blade tip was actually moving at the moment of detach.
-  // Average over the last 5 samples (~80 ms) to smooth out per-frame jitter.
+  // Swing velocity: average direction over last 5 local pts (already in local space,
+  // so use global pts array before conversion — we need world-space direction)
+  // Use _sv1 for velocity direction
   const n=pts.length;
   const lookback=Math.min(5,n-1);
-  const swingDir=(lookback>0)
-    ?new THREE.Vector3().subVectors(pts[n-1],pts[n-1-lookback]).normalize()
-    :camFwd.clone();
-  const vel=swingDir.multiplyScalar(50);
-  // Store camFwd snapshot so ribbon shape stays consistent while traveling
-  launchedRibbons.push({pts:pts,vel:vel,fwd:camFwd.clone(),age:0,maxAge:1.4,mesh:mesh,mat:mat});
+  // pts are now in local space; reconstruct world direction from last two world pts
+  // by using _sv0 (centroid) + pts — but pts are already local. Use camFwd as fallback.
+  // Instead, compute from original world positions via centroid + local offset diff:
+  if(lookback>0){
+    _sv1.subVectors(pts[n-1],pts[n-1-lookback]).normalize(); // local-space swing dir
+  } else {
+    _sv1.copy(camFwd);
+  }
+  _sv1.multiplyScalar(50); // velocity magnitude 50 units/s
+  // Cloned vel stored per-ribbon (small one-time alloc at launch, not per-frame)
+  launchedRibbons.push({vel:_sv1.clone(),age:0,maxAge:1.4,mesh:mesh,mat:mat,halfLen:halfLen});
 }
 
 // ── Update all in-flight launched ribbons ────────────────────────────────
+// No geometry rebuilds — mesh.position.addScaledVector is the only per-frame cost.
 function updateLaunchedRibbons(dt){
-  const done=[];
-  for(let ri=0;ri<launchedRibbons.length;ri++){
+  for(let ri=launchedRibbons.length-1;ri>=0;ri--){
     const r=launchedRibbons[ri];
     r.age+=dt;
     const life=Math.max(0,1-r.age/r.maxAge);
-    if(life<0.01){done.push(ri);continue;}
-    // Translate every point by velocity
-    for(let pi=0;pi<r.pts.length;pi++) r.pts[pi].addScaledVector(r.vel,dt);
-    // Rebuild geometry at new positions
+    if(life<0.01){
+      scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mat.dispose();
+      launchedRibbons.splice(ri,1); continue;
+    }
+    // Translate the whole mesh — single Vector3 op, no geometry work
+    r.mesh.position.addScaledVector(r.vel,dt);
     r.mat.opacity=life*0.90;
-    const oldGeo=r.mesh.geometry;
-    const geo=buildRibbonGeo(r.pts,r.fwd);
-    if(geo){r.mesh.geometry=geo; oldGeo.dispose();}
-    // 100% damage on enemy contact
-    for(let pi=0;pi<r.pts.length;pi++){
-      for(let ei=0;ei<enemies.length;ei++){
-        const e=enemies[ei];
-        if(e.userData.hp>0&&e.position.distanceTo(r.pts[pi])<2.0){
-          e.userData.hp=0; triggerKillFlash(0xffee00);
-        }
+    // Sphere hit-test: mesh.position is the ribbon centroid, halfLen is bounding radius
+    const hitR=r.halfLen+2.0;
+    for(let ei=0;ei<enemies.length;ei++){
+      const e=enemies[ei];
+      if(e.userData.hp>0&&e.position.distanceTo(r.mesh.position)<hitR){
+        e.userData.hp=0; triggerKillFlash(0xffee00);
       }
     }
-  }
-  // Remove done (iterate backwards to keep indices valid)
-  for(let i=done.length-1;i>=0;i--){
-    const r=launchedRibbons[done[i]];
-    scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mat.dispose();
-    launchedRibbons.splice(done[i],1);
   }
 }
 
@@ -3799,22 +3809,22 @@ function assignFlankAngles(){
 // Pick a random goal position on the sphere surface that is 5–12 m from the player.
 // Called every 3 seconds per enemy, and immediately when an enemy is inside 5 m.
 function pickEnemyGoal(e, ud){
-  const radius = 5 + Math.random() * 7;          // 5–12 m stand-off distance
-  const angle  = Math.random() * Math.PI * 2;    // random azimuth around player
-  const pNorm  = _camWP.clone().normalize();      // up-vector at player position
-  // Build two orthogonal tangent vectors in the plane tangent to the sphere at the player
-  const arb = (Math.abs(pNorm.y) < 0.9)
-    ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
-  const t1 = new THREE.Vector3().crossVectors(pNorm, arb).normalize();
-  const t2 = new THREE.Vector3().crossVectors(pNorm, t1);
-  // Offset from player, projected onto the sphere surface
-  const goalDir = _camWP.clone()
-    .addScaledVector(t1, Math.cos(angle) * radius)
-    .addScaledVector(t2, Math.sin(angle) * radius)
+  const radius = 5 + Math.random() * 7;
+  const angle  = Math.random() * Math.PI * 2;
+  // _sv3=pNorm, _sv4=t1, _sv5=t2/goalDir — scratch, no allocation
+  _sv3.copy(_camWP).normalize();
+  if(Math.abs(_sv3.y)<0.9) _sv4.set(0,1,0); else _sv4.set(1,0,0);
+  _sv4.crossVectors(_sv3,_sv4).normalize(); // t1
+  _sv5.crossVectors(_sv3,_sv4);             // t2
+  _sv5.copy(_camWP)
+    .addScaledVector(_sv4,Math.cos(angle)*radius)
+    .addScaledVector(_sv5,Math.sin(angle)*radius)
     .normalize();
-  const surfR = getPlanetHeight(goalDir);
-  ud.goalPos   = goalDir.multiplyScalar(surfR + ud.hoverH);
-  ud.goalTimer = 3.0;
+  const surfR=getPlanetHeight(_sv5);
+  // goalPos must be a persistent Vector3 owned by ud — clone from scratch
+  if(!ud.goalPos) ud.goalPos=new THREE.Vector3();
+  ud.goalPos.copy(_sv5).multiplyScalar(surfR+ud.hoverH);
+  ud.goalTimer=3.0;
 }
 
 function updateEnemyAI(e,ud,toPlayer,dist,dt){
@@ -3828,28 +3838,26 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
   // Repick: timer expired OR enemy has drifted inside the 5-m exclusion zone
   if(ud.goalTimer <= 0 || dist < 5) pickEnemyGoal(e, ud);
 
-  // ── Line-of-sight tracking ─────────────────────────────────────────
-  const camFwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
-  const toEnemy=new THREE.Vector3().subVectors(e.position,_camWP).normalize();
-  const inSight=toEnemy.dot(camFwd)>0.2;
+  // ── Line-of-sight tracking — scratch: _sv0=camFwd, _sv1=toEnemy ──────────
+  _sv0.set(0,0,-1).applyQuaternion(camera.quaternion);
+  _sv1.subVectors(e.position,_camWP).normalize();
+  const inSight=_sv1.dot(_sv0)>0.2;
   ud.outOfSightTimer=inSight?0:(ud.outOfSightTimer||0)+dt;
 
   // ── Seek line of sight after 3 seconds out of view ────────────────
   if(ud.outOfSightTimer>=3.0){
-    const playerDir=_camWP.clone().normalize();
-    const tangFwd=camFwd.clone()
-      .addScaledVector(playerDir,-camFwd.dot(playerDir)).normalize();
-    const targetPos=_camWP.clone().addScaledVector(tangFwd,20);
-    const seekDir=new THREE.Vector3()
-      .subVectors(targetPos,e.position).normalize();
-    e.position.addScaledVector(seekDir,ud.speed*1.5*dt);
+    _sv2.copy(_camWP).normalize();                               // playerDir
+    _sv3.copy(_sv0).addScaledVector(_sv2,-_sv0.dot(_sv2)).normalize(); // tangFwd
+    _sv4.copy(_camWP).addScaledVector(_sv3,20);                  // targetPos
+    _sv5.subVectors(_sv4,e.position).normalize();                // seekDir
+    e.position.addScaledVector(_sv5,ud.speed*1.5*dt);
     return;
   }
 
   // ── Active repulsion: push directly away when inside 5 m ─────────
   if(dist < 5){
-    const away = e.position.clone().sub(_camWP).normalize();
-    e.position.addScaledVector(away, ud.speed * 1.5 * dt);
+    _sv0.copy(e.position).sub(_camWP).normalize();
+    e.position.addScaledVector(_sv0,ud.speed*1.5*dt);
     return;
   }
 
@@ -3860,8 +3868,8 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
       _flankAngles[e.uuid]=(angle||0)+dt*1.8;
       const cx=_camWP.x+Math.cos(_flankAngles[e.uuid])*18;
       const cz=_camWP.z+Math.sin(_flankAngles[e.uuid])*18;
-      const orbitDir=new THREE.Vector3(cx-e.position.x,0,cz-e.position.z).normalize();
-      e.position.addScaledVector(orbitDir,ud.speed*dt);
+      _sv0.set(cx-e.position.x,0,cz-e.position.z).normalize();  // orbitDir
+      e.position.addScaledVector(_sv0,ud.speed*dt);
       return;
     }
   }
@@ -3873,24 +3881,21 @@ function updateEnemyAI(e,ud,toPlayer,dist,dt){
     }
     if(ud.charging){
       ud.chargeTimer-=dt;
-      e.position.addScaledVector(toPlayer.clone().normalize(),ud.speed*3.5*dt);
+      _sv0.copy(toPlayer).normalize();
+      e.position.addScaledVector(_sv0,ud.speed*3.5*dt);
       if(ud.chargeTimer<=0)ud.charging=false;
       if(dist<2.2){takeDamage(22);ud.charging=false;}
       return;
     }
   }
 
-  // ── Standard + fallback: steer toward current goal position ──────────────
-  // Goal is always ≥5 m from the player (guaranteed by pickEnemyGoal).
-  // Enemies approach their goal at normal speed, creating natural spread.
-  const toGoal = new THREE.Vector3().subVectors(ud.goalPos, e.position);
-  const goalDist = toGoal.length();
+  // ── Standard + fallback: steer toward goal position ──────────────────────
+  _sv0.subVectors(ud.goalPos,e.position);   // toGoal
+  const goalDist=_sv0.length();
   if(goalDist > 1.0){
-    // Blend goal direction with a small flank drift for organic movement
-    const flankAngle = _flankAngles[e.uuid] || 0;
-    const flankDrift = new THREE.Vector3(Math.cos(flankAngle), 0, Math.sin(flankAngle))
-      .multiplyScalar(0.15);
-    const moveDir = toGoal.normalize().add(flankDrift).normalize();
+    const flankAngle=_flankAngles[e.uuid]||0;
+    _sv1.set(Math.cos(flankAngle),0,Math.sin(flankAngle)).multiplyScalar(0.15); // flankDrift
+    const moveDir=_sv0.normalize().add(_sv1).normalize();
     e.position.addScaledVector(moveDir, ud.speed * dt);
   }
 }
