@@ -108,6 +108,7 @@ let health=100, maxHealth=100, shield=100, maxShield=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0, waveBreakUntil=0;
 let waveSpawnUntil=0;  // clock.elapsedTime when this wave's 1-min spawn window closes
 let gameEnded=false;   // true after wave 12 complete and all enemies cleared
+let _clearPromptSent=false; // debounce "clear remaining enemies" voice prompt
 // ── Combo multiplier ─────────────────────────────────────────────
 let comboCount=0, comboTimer=0, comboMult=1;
 // ── Boss system ──────────────────────────────────────────────────
@@ -1153,7 +1154,7 @@ function startGame(){
   setTimeout(()=>speak('Io. First contact. Survive.'),1500);
   health=maxHealth;shield=maxShield;
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;waveBreakUntil=0;
-  waveSpawnUntil=0; gameEnded=false;
+  waveSpawnUntil=0; gameEnded=false; _clearPromptSent=false;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
   currentWeaponIndex=0;
@@ -1164,7 +1165,7 @@ function startGame(){
   launchedRibbons.forEach(r=>{scene.remove(r.mesh);r.mesh.geometry.dispose();r.mat.dispose();});
   launchedRibbons=[]; _detachTimer=0.5;
   gripPosInitialised=false;
-  pickups.forEach(p=>scene.remove(p.mesh)); pickups=[];
+  pickups.forEach(p=>{scene.remove(p.mesh);if(p.meshLD)scene.remove(p.meshLD);}); pickups=[];
   setTimeout(spawnInitialPickups, 1200);
   dolly.position.set(0, getPlanetHeight({x:0,y:1,z:0}), 0); dolly.quaternion.identity();
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
@@ -1984,14 +1985,18 @@ function updateWaves(now){
   // Detected when waveBreakUntil hasn't been set for this wave yet
   // (waveBreakUntil ≤ waveSpawnUntil means break not started)
   if(now>=waveSpawnUntil&&waveBreakUntil<=waveSpawnUntil){
-    waveBreakUntil=now+30;
-    // Spawn 10 bonus pickups near player right at break start
-    spawnBreakPickups();
-    // Show upgrade cards (30-second selection window)
-    if(!upgradePhase) showUpgradeCards();
-    const label=wave<12?'Wave '+wave+' complete.':'Final wave complete.';
-    speak(label+' 30 second break.');
-    if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,31000);
+    if(enemies.length>0){
+      // Nudge player once to finish remaining enemies
+      if(!_clearPromptSent){_clearPromptSent=true;speak('Clear remaining enemies to begin break.');}
+    } else {
+      _clearPromptSent=false;
+      waveBreakUntil=now+30;
+      spawnBreakPickups();
+      if(!upgradePhase) showUpgradeCards();
+      const label=wave<12?'Wave '+wave+' complete.':'Final wave complete.';
+      speak(label+' 30 second break.');
+      if(wave%5===0&&!bossEnemy) setTimeout(spawnBoss,31000);
+    }
   }
 
   // ── Break ended → hide cards, advance or finish ───────────────────
@@ -2630,6 +2635,21 @@ function buildPickupMesh(type){
   return g;
 }
 
+// ── LOD mesh shown when pickup is >10 m away — cheap beacon only ──────────
+function buildPickupLOD(type){
+  const col=WEAPONS[type].pickupCol;
+  const g=new THREE.Group();
+  // Coloured glowing orb
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.22,6,4),
+    new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:.90,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  // Thin vertical beacon beam
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,3.5,4),
+    new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:.30,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  return g;
+}
+
 // spawnPickup now takes a normalised THREE.Vector3 direction on the sphere.
 // Legacy callers that pass (type, x, z) are handled below.
 function spawnPickup(type, dirOrX, zOrUndef){
@@ -2643,13 +2663,23 @@ function spawnPickup(type, dirOrX, zOrUndef){
     n=new THREE.Vector3(x/len*.7, Math.sqrt(Math.max(0,1-(x/len*.7)**2-(z/len*.7)**2)), z/len*.7).normalize();
   }
   const surfR=getPlanetHeight(n);
+  const pos=n.clone().multiplyScalar(surfR+1.2);
+
+  // HD full-detail mesh (shown when ≤10 m from player)
   const mesh=buildPickupMesh(type);
-  mesh.position.copy(n).multiplyScalar(surfR+1.2);
-  // Orient pickup so its local +Y points away from planet centre
+  mesh.position.copy(pos);
   const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),n);
   mesh.quaternion.copy(q);
   scene.add(mesh);
-  pickups.push({type, mesh, age:0, surfNorm:n.clone()});
+
+  // LOD beacon mesh (shown when >10 m from player)
+  const meshLD=buildPickupLOD(type);
+  meshLD.position.copy(pos);
+  meshLD.quaternion.copy(q);
+  meshLD.visible=false; // HD starts visible, LOD hidden
+  scene.add(meshLD);
+
+  pickups.push({type, mesh, meshLD, age:0, surfNorm:n.clone()});
 }
 
 function spawnInitialPickups(){
@@ -2673,25 +2703,49 @@ function updatePickups(dt){
   const rem=[];
   for(const p of pickups){
     p.age+=dt;
-    // Spin around radial axis (surface normal)
-    p.mesh.rotateOnAxis(p.surfNorm||new THREE.Vector3(0,1,0), dt*(Math.PI/2));
-    // Radial bob — move slightly in/out along surface normal
+    const sn=p.surfNorm;
+
+    // ── Position: radial bob ──────────────────────────────────────
     const bob=Math.sin(t*2+p.age)*0.04;
-    const baseR=getPlanetHeight(p.surfNorm||p.mesh.position.clone().normalize())+1.2;
-    p.mesh.position.copy(p.surfNorm||p.mesh.position.clone().normalize()).multiplyScalar(baseR+bob);
-    // Proximity pickup
-    if(camPos.distanceTo(p.mesh.position)<2.5){
+    const baseR=getPlanetHeight(sn)+1.2;
+    const worldR=baseR+bob;
+
+    // ── LOD switch at 10 m ────────────────────────────────────────
+    const dist=camPos.distanceTo(p.mesh.position);
+    const useHD=dist<=10;
+    p.mesh.visible=useHD;
+    p.meshLD.visible=!useHD;
+
+    if(useHD){
+      // HD: spin + bob
+      p.mesh.rotateOnAxis(sn, dt*(Math.PI/2));
+      p.mesh.position.copy(sn).multiplyScalar(worldR);
+    } else {
+      // LOD: just bob, no spin
+      p.meshLD.position.copy(sn).multiplyScalar(worldR);
+    }
+
+    // ── Proximity pickup ─────────────────────────────────────────
+    if(dist<2.5){
       equipWeapon(p.type);
       playPickupSound(p.type);
       haptic('right',.8,120);
       scene.remove(p.mesh);
+      scene.remove(p.meshLD);
       rem.push(p);
-      // Respawn at new random near-pole location after 25 s
+      // Respawn after 25 s only if <5 pickups already near the player
       const phi2=Math.random()*Math.PI*2, theta2=0.1+Math.random()*0.4;
       const respawnDir=new THREE.Vector3(
         Math.sin(theta2)*Math.cos(phi2), Math.cos(theta2), Math.sin(theta2)*Math.sin(phi2)
       ).normalize();
-      setTimeout(()=>{ if(gameActive)spawnPickup(p.type, respawnDir); },25000);
+      setTimeout(()=>{
+        if(!gameActive) return;
+        // Count pickups within 50 m of player before respawning
+        const cp=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+        let near=0;
+        for(const q of pickups) if(cp.distanceTo(q.mesh.position)<50) near++;
+        if(near<5) spawnPickup(p.type, respawnDir);
+      },25000);
     }
   }
   pickups=pickups.filter(x=>!rem.includes(x));
