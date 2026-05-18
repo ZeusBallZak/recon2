@@ -1785,11 +1785,11 @@ function updatePlayer(dt){
       pushDir=toPlayer.clone().normalize();
     }else{
       pushDir=new THREE.Vector3()
-        .subVectors(playerDir,vc.axis.clone().multiplyScalar(playerDir.dot(vc.axis)));
+        .subVectors(_sv0,vc.axis.clone().multiplyScalar(_sv0.dot(vc.axis)));
       if(pushDir.lengthSq()<0.0001) continue;
       pushDir.normalize();
     }
-    pushDir.addScaledVector(playerDir,-pushDir.dot(playerDir));
+    pushDir.addScaledVector(_sv0,-pushDir.dot(_sv0));
     if(pushDir.lengthSq()<0.0001) continue;
     pushDir.normalize();
     dolly.position.addScaledVector(pushDir,PLAYER_R-dist+0.12);
