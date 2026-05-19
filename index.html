@@ -3482,8 +3482,8 @@ function placeBillboard(mesh, dist, heightAboveEye){
     .addScaledVector(surfNorm,heightAboveEye);
   // Build explicit quaternion so +Z (texture face) points toward camera
   const toCamera=new THREE.Vector3().subVectors(camPos,mesh.position).normalize();
-  let right=new THREE.Vector3().crossVectors(toCamera,surfNorm);
-  if(right.lengthSq()<0.001) right.crossVectors(toCamera,new THREE.Vector3(1,0,0));
+  let right=new THREE.Vector3().crossVectors(surfNorm,toCamera); // correct lateral axis
+  if(right.lengthSq()<0.001) right.crossVectors(new THREE.Vector3(1,0,0),toCamera);
   right.normalize();
   const up=new THREE.Vector3().crossVectors(right,toCamera);
   mesh.quaternion.setFromRotationMatrix(
@@ -4161,8 +4161,8 @@ function showUpgradeCards(){
     // Position card, then orient to face camera
     mesh.position.copy(camPos).addScaledVector(fwd,5).addScaledVector(right,offset).addScaledVector(surfNorm,0.1);
     const toCamera=new THREE.Vector3().subVectors(camPos,mesh.position).normalize();
-    let r2=new THREE.Vector3().crossVectors(toCamera,surfNorm);
-    if(r2.lengthSq()<0.001) r2.crossVectors(toCamera,new THREE.Vector3(1,0,0));
+    let r2=new THREE.Vector3().crossVectors(surfNorm,toCamera); // correct lateral axis
+    if(r2.lengthSq()<0.001) r2.crossVectors(new THREE.Vector3(1,0,0),toCamera);
     r2.normalize();
     const up2=new THREE.Vector3().crossVectors(r2,toCamera);
     mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(r2,up2,toCamera));
