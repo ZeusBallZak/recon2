@@ -144,7 +144,7 @@ let volcanoColliders=[];
 let pyramidColliders=[]; // [{basePos,axis,r,h,baseR}] — same format used by closestPointOnCone
 
 // ── Input state ────────────────────────────────────────────────────────
-let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false;
+let snapCooldown=0, leftGripHeld=false, aWasPressed=false, bWasPressed=false, yWasPressed=false;
 // ── Dash state ────────────────────────────────────────────────────
 let dashActive=false, dashRemaining=0, dashCooldown=0;
 const DASH_SPEED=50;    // units/s (covers 10 m in 0.2 s)
@@ -1653,6 +1653,15 @@ function updatePlayer(dt){
         speak(WEAPONS[nextType].name);
       }
       xWasPressed=xNow;
+      // Y button (index 5): skip to next wave — kills remaining enemies and ends spawn window
+      const yNow=gp.buttons[5]?.pressed??false;
+      if(yNow&&!yWasPressed&&gameActive&&!gameEnded){
+        enemies.forEach(e=>{ e.userData.hp=0; });
+        const now2=clock.elapsedTime;
+        if(waveSpawnUntil>now2) waveSpawnUntil=now2-0.1; // force spawn window closed
+        speak('Wave skipped.');
+      }
+      yWasPressed=yNow;
     }
 
     if(src.handedness==='right'){
@@ -1958,11 +1967,7 @@ function showMissionComplete(){
   const tex=new THREE.CanvasTexture(cv);
   const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
   const mesh=new THREE.Mesh(new THREE.PlaneGeometry(3.8,1.9),mat);
-  const fwd=new THREE.Vector3(); camera.getWorldDirection(fwd);
-  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  mesh.position.copy(camPos).addScaledVector(fwd,5);
-  mesh.position.y=camPos.y+0.4;
-  mesh.lookAt(camPos);
+  placeBillboard(mesh, 5, 0.5);
   scene.add(mesh);
   haptic('right',1.0,600); haptic('left',1.0,600);
   speak('No more enemies detected. Secondary mission: explore the moon.');
@@ -3435,14 +3440,7 @@ function showGameOverBanner(){
   });
   const mesh=new THREE.Mesh(new THREE.PlaneGeometry(4.0,2.0), mat);
   mesh.userData={age:0, phase:'in'};  // phases: 'in' → 'hold' (stays, no auto-fade)
-
-  const fwd=new THREE.Vector3();
-  camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
-  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  mesh.position.copy(camPos).addScaledVector(fwd, 7);
-  mesh.position.y=camPos.y+0.3;
-  mesh.lookAt(camPos);
-
+  placeBillboard(mesh, 7, 0.4);
   scene.add(mesh);
   gameOverBillboard=mesh;
 }
@@ -3465,6 +3463,31 @@ function clearGameOverBanner(){
   gameOverBillboard.material.dispose();
   gameOverBillboard.geometry.dispose();
   gameOverBillboard=null;
+}
+
+// ── Surface-aware billboard placement ────────────────────────────────────────
+// Projects camera forward onto the local tangent plane so signs always appear
+// "ahead" of the player regardless of where they are on the sphere.
+// heightAboveEye is measured along the surface normal (local "up"), not world Y.
+function placeBillboard(mesh, dist, heightAboveEye){
+  const surfNorm=dolly.position.clone().normalize();
+  const fwd=new THREE.Vector3();
+  camera.getWorldDirection(fwd);
+  fwd.addScaledVector(surfNorm,-fwd.dot(surfNorm)); // project onto tangent plane
+  if(fwd.lengthSq()<0.001) fwd.set(0,0,-1);
+  fwd.normalize();
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  mesh.position.copy(camPos)
+    .addScaledVector(fwd,dist)
+    .addScaledVector(surfNorm,heightAboveEye);
+  // Build explicit quaternion so +Z (texture face) points toward camera
+  const toCamera=new THREE.Vector3().subVectors(camPos,mesh.position).normalize();
+  let right=new THREE.Vector3().crossVectors(toCamera,surfNorm);
+  if(right.lengthSq()<0.001) right.crossVectors(toCamera,new THREE.Vector3(1,0,0));
+  right.normalize();
+  const up=new THREE.Vector3().crossVectors(right,toCamera);
+  mesh.quaternion.setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(right,up,toCamera));
 }
 
 function showWaveBanner(waveNum){
@@ -3512,13 +3535,8 @@ function showWaveBanner(waveNum){
   const mesh=new THREE.Mesh(new THREE.PlaneGeometry(3.2,1.2), mat);
   mesh.userData={ age:0, phase:'in' };  // phases: 'in' | 'hold' | 'out'
 
-  // Position 8 m ahead of camera at eye level, always facing player
-  const fwd=new THREE.Vector3();
-  camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
-  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  mesh.position.copy(camPos).addScaledVector(fwd, 8);
-  mesh.position.y=camPos.y+0.2; // slight upward offset from eye centre
-  mesh.lookAt(camPos); // face the player
+  // Position and orient using surface-aware placement
+  placeBillboard(mesh, 8, 0.3);
 
   scene.add(mesh);
   waveBillboard=mesh;
@@ -3804,15 +3822,30 @@ function spawnCrater(pos){
   const geo=new THREE.RingGeometry(r*.35,r,16,1);
   const mat=new THREE.MeshBasicMaterial({color:0x110500,transparent:true,opacity:.75,depthWrite:false,side:THREE.DoubleSide});
   const mesh=new THREE.Mesh(geo,mat);
-  // Orient crater to lie on the sphere surface (rotate normal to face outward)
   const surfNorm=pos.clone().normalize();
   const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),surfNorm);
   mesh.quaternion.copy(q);
   const groundR=getPlanetHeight(surfNorm)+.05;
   mesh.position.copy(surfNorm).multiplyScalar(groundR);
   scene.add(mesh);
-  craters.push({mesh,age:0});
+  craters.push({mesh,mat,age:0});
   if(craters.length>30){const old=craters.shift();scene.remove(old.mesh);}
+}
+
+function updateCraters(dt){
+  const FADE_START=13; // seconds before fade begins
+  const MAX_AGE=15;    // seconds before deletion
+  for(let i=craters.length-1;i>=0;i--){
+    const c=craters[i];
+    c.age+=dt;
+    if(c.age>=MAX_AGE){
+      scene.remove(c.mesh);
+      craters.splice(i,1);
+    } else if(c.age>FADE_START){
+      // Fade out over the final 2 seconds
+      c.mat.opacity=0.75*(1-(c.age-FADE_START)/(MAX_AGE-FADE_START));
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -4101,13 +4134,17 @@ let CHARGE_MAX_VAL=8.0, SPRINT_VAL=9.0, SHIELD_RECHARGE_VAL=10.0;
 
 function showUpgradeCards(){
   upgradePhase=true;
-  // Pick 3 random distinct upgrades
   const picks=[...UPGRADES].sort(()=>Math.random()-.5).slice(0,3);
-  const fwd=new THREE.Vector3();camera.getWorldDirection(fwd);fwd.y=0;fwd.normalize();
+  // Compute tangent-plane forward and right once, shared by all 3 cards
+  const surfNorm=dolly.position.clone().normalize();
+  const fwd=new THREE.Vector3(); camera.getWorldDirection(fwd);
+  fwd.addScaledVector(surfNorm,-fwd.dot(surfNorm));
+  if(fwd.lengthSq()<0.001) fwd.set(0,0,-1);
+  fwd.normalize();
+  const right=new THREE.Vector3().crossVectors(fwd,surfNorm).normalize();
   const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
   picks.forEach((up,i)=>{
-    const offset=(i-1)*1.4; // spread left/right
-    const right=new THREE.Vector3(-fwd.z,0,fwd.x);
+    const offset=(i-1)*1.4;
     const cv=document.createElement('canvas');cv.width=320;cv.height=200;
     const ctx=cv.getContext('2d');
     ctx.fillStyle='rgba(0,8,25,.92)';ctx.fillRect(0,0,320,200);
@@ -4121,9 +4158,14 @@ function showUpgradeCards(){
     const tex=new THREE.CanvasTexture(cv);
     const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
     const mesh=new THREE.Mesh(new THREE.PlaneGeometry(1.2,.75),mat);
-    mesh.position.copy(camPos).addScaledVector(fwd,5).addScaledVector(right,offset);
-    mesh.position.y=camPos.y+.1;
-    mesh.lookAt(camPos);
+    // Position card, then orient to face camera
+    mesh.position.copy(camPos).addScaledVector(fwd,5).addScaledVector(right,offset).addScaledVector(surfNorm,0.1);
+    const toCamera=new THREE.Vector3().subVectors(camPos,mesh.position).normalize();
+    let r2=new THREE.Vector3().crossVectors(toCamera,surfNorm);
+    if(r2.lengthSq()<0.001) r2.crossVectors(toCamera,new THREE.Vector3(1,0,0));
+    r2.normalize();
+    const up2=new THREE.Vector3().crossVectors(r2,toCamera);
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(r2,up2,toCamera));
     scene.add(mesh);
     upgradeCards.push({mesh,mat,tex,upgrade:up,age:0});
   });
@@ -4858,6 +4900,7 @@ function loop(time,frame){
   updateLandmarkLODs();
   updatePortals(dt);
   updateMuzzleCone(dt);
+  updateCraters(dt);
   updateKillFlash(dt);
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
