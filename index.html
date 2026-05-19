@@ -3485,7 +3485,7 @@ function placeBillboard(mesh, dist, heightAboveEye){
   let right=new THREE.Vector3().crossVectors(surfNorm,toCamera); // correct lateral axis
   if(right.lengthSq()<0.001) right.crossVectors(new THREE.Vector3(1,0,0),toCamera);
   right.normalize();
-  const up=new THREE.Vector3().crossVectors(right,toCamera);
+  const up=new THREE.Vector3().crossVectors(toCamera,right); // = +surfNorm, upright on sphere
   mesh.quaternion.setFromRotationMatrix(
     new THREE.Matrix4().makeBasis(right,up,toCamera));
 }
@@ -4164,7 +4164,7 @@ function showUpgradeCards(){
     let r2=new THREE.Vector3().crossVectors(surfNorm,toCamera); // correct lateral axis
     if(r2.lengthSq()<0.001) r2.crossVectors(new THREE.Vector3(1,0,0),toCamera);
     r2.normalize();
-    const up2=new THREE.Vector3().crossVectors(r2,toCamera);
+    const up2=new THREE.Vector3().crossVectors(toCamera,r2); // = +surfNorm, upright on sphere
     mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(r2,up2,toCamera));
     scene.add(mesh);
     upgradeCards.push({mesh,mat,tex,upgrade:up,age:0});
