@@ -2003,6 +2003,7 @@ function updateWaves(now){
   // ── Break ended → auto-select card if not yet chosen, advance wave ──
   if(waveBreakUntil>waveSpawnUntil&&now>=waveBreakUntil){
     autoSelectUpgradeCard(); // applies a random card if player hasn't chosen yet
+    const endingWave=wave;   // snapshot BEFORE incrementing
     if(wave<12){
       wave++;
       waveSpawnUntil=now+60;  // fresh 1-minute window
@@ -2010,14 +2011,14 @@ function updateWaves(now){
       showWaveBanner(wave); drawHUD();
       speak('Wave '+wave);
     }
-    // After wave 12 break: check for all-clear
-    if(wave>=12&&enemies.length===0&&!gameEnded){
+    // Only end game when wave 12's OWN break finishes (not the 11→12 transition)
+    if(endingWave===12&&enemies.length===0&&!gameEnded){
       gameEnded=true; showMissionComplete();
     }
   }
 
-  // ── Post-wave-12 all-clear: enemies may survive past the break ────
-  if(wave>=12&&now>=waveBreakUntil&&waveBreakUntil>waveSpawnUntil&&!gameEnded&&enemies.length===0){
+  // ── Post-wave-12 all-clear: enemies surviving past the break ─────
+  if(wave===12&&now>=waveBreakUntil&&waveBreakUntil>waveSpawnUntil&&!gameEnded&&enemies.length===0){
     gameEnded=true; showMissionComplete();
   }
 }
