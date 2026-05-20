@@ -180,6 +180,7 @@ const _prevGripPos=new THREE.Vector3();
 const _currGripPos=new THREE.Vector3();
 let gripVelX=0, gripVelY=0, gripVelZ=0; // world-space velocity components
 const SLASH_SPEED_THRESHOLD=4.0;  // m/s — minimum tip speed to activate slash ribbon
+const SABER_HIT_R=2.0;            // continuous blade hitbox radius (4× natural ~0.5 m blade)
 const SLASH_COOLDOWN=0.28;        // seconds — minimum between swing-sound/haptic triggers
 const SLASH_WINDOW=0.5;           // seconds — ribbon stays visible after a fast swing
 const SLASH_HISTORY_SAMPLES=32;   // tip positions stored (32 × ~16 ms ≈ 0.5 s)
@@ -2924,7 +2925,7 @@ function fireSaber(){
   playSwingSound();
   for(let i=0;i<4;i++) setTimeout(spawnSaberTrail, i*40);
   const headPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
-  for(const e of enemies){ if(e.position.distanceTo(headPos)<5.5) e.userData.hp-=99; }
+  for(const e of enemies){ if(e.position.distanceTo(headPos)<SABER_HIT_R*4) e.userData.hp-=99; }
 }
 
 function fireRail(){
@@ -3238,7 +3239,22 @@ function updateSlashDetection(dt){
   }
 
   updateSlashRibbon(_slashActiveDur/SLASH_WINDOW);
-  _prevGripPos.copy(_currGripPos);
+
+  // ── Continuous blade hitbox — kills any enemy within SABER_HIT_R of tip ──
+  // Runs every frame the saber is equipped; no swing required.
+  if(saberTip&&gameActive){
+    const tipWorld=new THREE.Vector3();
+    saberTip.getWorldPosition(tipWorld);
+    for(let ei=enemies.length-1;ei>=0;ei--){
+      const e=enemies[ei];
+      if(e.userData.hp>0&&tipWorld.distanceTo(e.position)<SABER_HIT_R){
+        e.userData.hp=0;
+        triggerKillFlash(0xffee00);
+        haptic('right',1.0,80);
+      }
+    }
+  }
+  _prevGripPos.copy(_currGripPos); // update velocity tracker for next frame
 }
 
 // Live ribbon still attached to the sword (fades when not swinging fast)
