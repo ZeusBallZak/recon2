@@ -290,58 +290,114 @@ uniform float uTime;uniform vec3 uSunDir;varying vec2 vUv;varying vec3 vN;
 float hh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float nn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hh(i),hh(i+vec2(1,0)),f.x),mix(hh(i+vec2(0,1)),hh(i+vec2(1,1)),f.x),f.y);}
 float fb(vec2 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*nn(p);p=p*2.+vec2(3.1,1.7);a*=.5;}return v;}
+float fb3(vec2 p){float v=0.,a=.5;for(int i=0;i<3;i++){v+=a*nn(p);p=p*2.+vec2(3.1,1.7);a*=.5;}return v;}
 void main(){
   float t=uTime*.015;vec2 uv=vUv;
+  // Band distortion — three turbulence layers for wavy belt edges (Juno-accurate)
   float y=uv.y
-    +fb(vec2(uv.x*5.+t,uv.y*2.))*.05
-    +fb(vec2(uv.x*10.-t*.6,uv.y*4.))*.025
-    +fb(vec2(uv.x*20.+t*.4,uv.y*8.))*.01;
+    +fb(vec2(uv.x*5.+t,uv.y*2.))*.06
+    +fb(vec2(uv.x*12.-t*.5,uv.y*5.))*.028
+    +fb(vec2(uv.x*25.+t*.3,uv.y*10.))*.012;
   float b=y*10.;
-  float s1=sin(b*3.14159)*.5+.5,s2=sin(b*6.28318+1.3)*.5+.5;
-  float s3=sin(b*1.5708+.7)*.5+.5,s4=sin(b*9.42477-.4)*.5+.5;
-  vec3 cr=vec3(.95,.89,.74),be=vec3(.82,.70,.52),o1=vec3(.78,.48,.22);
-  vec3 o2=vec3(.68,.36,.14),ru=vec3(.55,.28,.12),db=vec3(.35,.18,.09),wh=vec3(.98,.95,.88);
-  vec3 col=mix(cr,be,s1);
-  col=mix(col,o1,s2*.65);col=mix(col,o2,s3*.5);
-  col=mix(col,db,fb(vec2(uv.x*5.+t*.5,y*6.))*.55);
-  col=mix(col,wh,fb(vec2(uv.x*3.-t*.3,y*4.+1.))*.3);
-  col=mix(col,ru,s4*.35);
-  col=mix(col,o1,fb(vec2(uv.x*20.+t*2.,y*15.))*.12);
-
-  // ── GREAT RED SPOT ───────────────────────────────────────────────
-  // Jupiter sits at world(−850,620,−1900). Player looks from origin.
-  // Visible face maps to u≈0.30 on SphereGeometry UV.
-  // GRS latitude ~23°S → v≈0.40.  Old u=0.62 was on the hidden back face.
-  vec2 grsC=vec2(0.30,0.40);
-  vec2 grsEll=(uv-grsC)*vec2(4.0,8.2);   // oval: wider in longitude
+  // Multi-frequency sine layers reproduce Jupiter's alternating belts and zones
+  float s1=sin(b*3.14159)*.5+.5;
+  float s2=sin(b*6.28318+1.3)*.5+.5;
+  float s3=sin(b*4.71+.7)*.5+.5;
+  float s4=sin(b*9.42-.4)*.5+.5;
+  float s5=sin(b*14.1+1.8)*.5+.5;
+  // Juno 2024 color palette
+  vec3 cream =vec3(.96,.91,.76);
+  vec3 lttan  =vec3(.88,.76,.56);
+  vec3 orange =vec3(.80,.50,.22);
+  vec3 brwn   =vec3(.60,.32,.11);
+  vec3 dkbrwn =vec3(.36,.17,.06);
+  vec3 white  =vec3(.99,.97,.90);
+  vec3 reddish=vec3(.72,.28,.09);
+  vec3 graybl =vec3(.52,.56,.68);
+  vec3 ltbrwn =vec3(.74,.52,.32);
+  vec3 col=mix(cream,lttan,s1);
+  col=mix(col,orange,s2*.60);
+  col=mix(col,brwn,s3*.52);
+  col=mix(col,dkbrwn,fb(vec2(uv.x*6.+t*.5,y*7.))*.52);
+  col=mix(col,white,fb(vec2(uv.x*3.-t*.3,y*5.+1.))*.38);
+  col=mix(col,reddish,s4*.32);
+  col=mix(col,ltbrwn,s5*.28);
+  // Fine turbulent filamentary cloud detail at belt edges
+  float turb=fb(vec2(uv.x*40.+t*3.,y*22.))*.08;
+  col+=vec3(turb*.18,turb*.07,0.);
+  // Polar regions: Juno images show blue-gray tones with circumpolar cyclones
+  float pBlend=smoothstep(.72,.97,uv.y)+smoothstep(.28,.03,uv.y);
+  col=mix(col,graybl,pBlend*.75);
+  col+=vec3(.03,.05,.10)*(smoothstep(.82,1.,uv.y)+smoothstep(.18,0.,uv.y))*fb(vec2(uv.x*8.,uv.y*8.+t))*.5;
+  // === GREAT RED SPOT ===
+  vec2 grsC=vec2(.30,.40);
+  vec2 grsEll=(uv-grsC)*vec2(4.,8.2);
   float grsDist=length(grsEll);
-  float grsOuter=smoothstep(1.00,0.00,grsDist);
-  float grsRing=smoothstep(1.00,0.55,grsDist)-smoothstep(0.55,0.10,grsDist);
-  float grsCore=smoothstep(0.40,0.00,grsDist);
-  float swA=atan(grsEll.y,grsEll.x);
-  float sw1=fb(grsEll*1.3+vec2(t*.55,swA*2.3));   // cyclonic swirl layer 1
-  float sw2=fb(grsEll*2.6-vec2(t*.28,swA*3.1));   // cyclonic swirl layer 2
-  vec3 grsDeep=vec3(0.48,0.09,0.03);   // dark reddish eye
-  vec3 grsMid =vec3(0.94,0.34,0.08);   // orange-red main body
-  vec3 grsEdge=vec3(0.68,0.14,0.05);   // crimson outer ring
-  vec3 grsFil =vec3(0.98,0.54,0.16);   // bright ring filaments
+  float grsOuter=smoothstep(1.,.0,grsDist);
+  float grsRing=smoothstep(1.,.55,grsDist)-smoothstep(.55,.10,grsDist);
+  float grsCore=smoothstep(.40,.0,grsDist);
+  float swA=atan(grsEll.y,grsEll.x)+t*.55;
+  float sw1=fb(grsEll*1.3+vec2(cos(swA),sin(swA))*.4);
+  float sw2=fb(grsEll*2.6+vec2(cos(swA*1.2),sin(swA*1.2))*.3);
+  vec3 grsDeep=vec3(.48,.09,.03);
+  vec3 grsMid =vec3(.94,.34,.08);
+  vec3 grsEdge=vec3(.68,.14,.05);
+  vec3 grsFil =vec3(.98,.54,.16);
   vec3 grsCol=mix(grsEdge,grsMid,smoothstep(0.,1.,sw1*1.8));
   grsCol=mix(grsCol,grsDeep,grsCore*.65);
   grsCol=mix(grsCol,grsFil,grsRing*sw2*1.6);
   col=mix(col,grsCol,grsOuter*.97);
-  col+=vec3(0.12,0.04,0.01)*grsRing*(1.-sw1*.4)*grsOuter; // luminous halo
-
-  // Oval BA companion storm
-  vec2 sp2=(uv-vec2(0.21,0.56))*vec2(6.,14.);
-  col=mix(col,vec3(.96,.86,.72),smoothstep(1.,.1,length(sp2))*.7);
-
-  // ── Sun directional shading (world-space) ────────────────────────
-  vec3 Nn=normalize(vN);
-  float sunDot=dot(Nn,uSunDir);
-  float diff=max(0.20,sunDot);
-  col*=diff;
-  float terminator=smoothstep(-0.15,0.15,sunDot); // 0=night,1=day
-  col+=vec3(.12,.05,.01)*(1.-terminator)*0.6; // night-side orange atmospheric edge
+  col+=vec3(.12,.04,.01)*grsRing*(1.-sw1*.4)*grsOuter;
+  // === HURRICANE STORMS (Juno-accurate colors and latitudes) ===
+  // Storm 1: Oval BA / Red Spot Jr — orange-red anticyclone, 33S
+  {vec2 d=(uv-vec2(.22,.44))*vec2(5.5,11.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)+t*.42;
+  float sw=fb3(d*1.8+vec2(cos(ang),sin(ang))*.35);
+  vec3 sc=mix(vec3(.86,.35,.07),vec3(.97,.62,.20),sw*1.5);
+  sc=mix(sc,vec3(.50,.10,.03),smoothstep(.35,.0,r)*.7);
+  col=mix(col,sc,outer*.94);}
+  // Storm 2: White anticyclone — cream oval, 40S (white vortices common near poles per Juno)
+  {vec2 d=(uv-vec2(.44,.36))*vec2(6.,12.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)-t*.35;
+  float sw=fb3(d*2.+vec2(cos(ang),sin(ang))*.3);
+  vec3 sc=mix(vec3(.88,.78,.58),white,sw*1.3);
+  col=mix(col,sc,outer*.88);}
+  // Storm 3: Brown barge — elongated dark brown, 8N in NEB
+  {vec2 d=(uv-vec2(.40,.59))*vec2(4.5,8.5);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)+t*.22;
+  float sw=fb3(d*1.6+vec2(cos(ang),sin(ang))*.5);
+  vec3 sc=mix(vec3(.28,.12,.04),vec3(.50,.26,.09),sw*1.4);
+  col=mix(col,sc,outer*.86);}
+  // Storm 4: Pale blue festoon — equatorial blue-gray cloud, 0 lat
+  {vec2 d=(uv-vec2(.48,.505))*vec2(7.,13.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)-t*.28;
+  float sw=fb3(d*2.5+vec2(cos(ang),sin(ang))*.3);
+  vec3 sc=mix(vec3(.50,.55,.72),vec3(.72,.78,.88),sw);
+  col=mix(col,sc,outer*.70);}
+  // Storm 5: Red vortex — warm reddish, 28S (red vortices in specific lat bands per Juno)
+  {vec2 d=(uv-vec2(.14,.43))*vec2(8.,15.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)+t*.50;
+  float sw=fb3(d*2.2+vec2(cos(ang),sin(ang))*.4);
+  vec3 sc=mix(vec3(.78,.44,.16),vec3(.92,.68,.32),sw*1.3);
+  sc=mix(sc,vec3(.48,.16,.05),smoothstep(.3,.0,r)*.6);
+  col=mix(col,sc,outer*.80);}
+  // Storm 6: Northern white oval — bright white, 28N (white near poles, Juno research)
+  {vec2 d=(uv-vec2(.35,.67))*vec2(7.,12.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)-t*.38;
+  float sw=fb3(d*1.9+vec2(cos(ang),sin(ang))*.35);
+  vec3 sc=mix(vec3(.90,.87,.76),white,sw*1.2);
+  col=mix(col,sc,outer*.84);}
+  // Storm 7: SEB rift white cluster — bright oval in SEB, 18S
+  {vec2 d=(uv-vec2(.51,.45))*vec2(8.5,15.);float r=length(d);
+  float outer=smoothstep(1.,.0,r);float ang=atan(d.y,d.x)+t*.45;
+  float sw=fb3(d*2.4+vec2(cos(ang),sin(ang))*.3);
+  vec3 sc=mix(vec3(.85,.72,.50),white,sw*1.4);
+  col=mix(col,sc,outer*.78);}
+  // === SUN SHADING ===
+  vec3 Nn=normalize(vN);float sunDot=dot(Nn,uSunDir);
+  float diff=max(.20,sunDot);col*=diff;
+  float term=smoothstep(-.15,.15,sunDot);
+  col+=vec3(.12,.05,.01)*(1.-term)*.6;
   gl_FragColor=vec4(col,1.);}`;  
 
 // ── Laser Bolt — rim/NdotV glow + travelling energy pulse ─────
@@ -2593,9 +2649,7 @@ function equipWeapon(type){
   // Start 30-second saber timer; clear it for any other weapon
   saberTimer = (type==='saber') ? 30.0 : 0;
   const def=WEAPONS[type];
-  if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
-  // Partial refill on pickup if already owned
-  else if(def.ammo!==Infinity) weaponAmmoMap[type]=Math.min(def.ammo, (weaponAmmoMap[type]||0)+def.ammo);
+  weaponAmmoMap[type]=def.ammo; // always restore to full max on equip
 
   if(!weaponGroup)return;
   // Clear current geometry
