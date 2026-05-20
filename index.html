@@ -2840,6 +2840,25 @@ function playPickupSound(type){
   o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t+.25);
 }
 
+// ── Portal twinkle — ascending arpeggio of bright sine tones ─────
+function playPortalTwinkle(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  // Five notes rising in pitch, staggered ~60 ms apart
+  const notes=[523,784,1047,1568,2093]; // C5 G5 C6 G6 C7
+  notes.forEach((freq,i)=>{
+    const o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(freq,t+i*.06);
+    o.frequency.setValueAtTime(freq*1.5,t+i*.06+.08); // tiny upward flick
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(0,t+i*.06);
+    g.gain.linearRampToValueAtTime(.30,t+i*.06+.02);   // fast attack
+    g.gain.exponentialRampToValueAtTime(.001,t+i*.06+.22);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t+i*.06); o.stop(t+i*.06+.25);
+  });
+}
+
 // ── Saber swing sound ─────────────────────────────────────────────
 function playSwingSound(){
   const ctx=getAudio(); if(!ctx) return;
@@ -4945,6 +4964,7 @@ function updatePortals(dt){
     other.cooldown=3.0;
 
     haptic('right',1.0,220);haptic('left',1.0,180);
+    playPortalTwinkle();
     speak('Portal');
     // Re-equip the current weapon so model/state resets correctly after teleport
     equipWeapon(currentWeapon);
