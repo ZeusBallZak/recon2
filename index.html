@@ -173,6 +173,7 @@ let gameOverBillboard=null;
 // ── Weapon system ─────────────────────────────────────────────────────
 let currentWeapon='laser';
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
+let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
 let grenadeProjs=[], rocketProjs=[], cannonProjs=[];
 // ── Sword slash wave velocity tracking ──────────────────────────
@@ -975,6 +976,12 @@ function drawHUD(){
     ctx.fillStyle='rgba(40,0,0,.8)';ctx.fillRect(W/2-80,235,160,10);
     ctx.fillStyle=`hsl(${bHP*12},100%,50%)`;ctx.fillRect(W/2-80,235,160*bHP,10);
   }
+
+  // FPS counter — colour-coded: green ≥60, yellow ≥45, red <45
+  const fps=Math.round(_fpsSmooth);
+  const fpsCol=fps>=60?'rgba(80,255,120,0.90)':fps>=45?'rgba(255,220,60,0.90)':'rgba(255,70,50,0.95)';
+  ctx.fillStyle=fpsCol;ctx.font='bold 13px monospace';ctx.textAlign='right';
+  ctx.fillText('FPS '+fps,W-16,252);
 
   hudTexture.needsUpdate=true;
 }
@@ -4945,6 +4952,7 @@ function updatePortals(dt){
 // ════════════════════════════════════════════════════════════════
 function loop(time,frame){
   const dt=Math.min(clock.getDelta(),.05);
+  if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
 
   terrainU.uTime.value=now;jupU.uTime.value=now;
@@ -4995,6 +5003,17 @@ function loop(time,frame){
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
   if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
+
+  // Refresh FPS counter on wrist HUD every frame
+  if(hudTexture&&hudCtx){
+    const fps=Math.round(_fpsSmooth);
+    const fpsCol=fps>=60?'rgba(80,255,120,0.90)':fps>=45?'rgba(255,220,60,0.90)':'rgba(255,70,50,0.95)';
+    hudCtx.clearRect(496-80,240,80,14);
+    hudCtx.fillStyle='rgba(0,8,18,0.92)';hudCtx.fillRect(496-80,240,80,14);
+    hudCtx.fillStyle=fpsCol;hudCtx.font='bold 13px monospace';hudCtx.textAlign='right';
+    hudCtx.fillText('FPS '+fps,496,252);
+    hudTexture.needsUpdate=true;
+  }
 
   // ── Volt Saber 30-second auto-expire ──────────────────────────────────────
   if(gameActive&&currentWeapon==='saber'&&saberTimer>0){
