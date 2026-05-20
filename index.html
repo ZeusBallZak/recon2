@@ -1316,6 +1316,9 @@ function fireWeapon(){
 }
 
 function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
+  // Safety: player weapons must NEVER go into eBolts (would incorrectly count
+  // against the enemy bolt limit). Enforce correct routing here regardless of
+  // what the caller passes.
   const LEN=1.5,grp=new THREE.Group();
   grp.position.copy(startPos);
   const d=dir.clone().normalize();
@@ -1330,6 +1333,7 @@ function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
     scene.add(grp);eBolts.push(grp);
     createBoltBuzz(grp);  // attach live 3-D buzz that follows this bolt
   }else{
+    // Player bolt — always goes to pBolts, never eBolts, no count limit
     grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.010,.010,LEN,7),new THREE.MeshBasicMaterial({color:0xffffff})));
     const u1={uTime:{value:0},uColor:{value:new THREE.Color(0,.67,1)}};
     const u2={uTime:{value:0},uColor:{value:new THREE.Color(.27,.8,1)}};
@@ -1500,7 +1504,9 @@ function updateEnemies(dt){
     }
     updateEnemyAI(e,ud,toP,dist,dt);
     ud.shootTimer-=dt;
-    if(ud.shootTimer<=0&&dist<70&&eBolts.length<7){
+    // Enemy bolt cap: counts eBolts ONLY — player bolts (pBolts) are a separate
+    // array and must never count against this limit.
+    if(ud.shootTimer<=0&&dist<70&&eBolts.length<5){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
       const d=new THREE.Vector3().subVectors(_camWP,e.position).normalize().add(jitter).normalize();
       spawnBolt(e.position.clone(),d,true,ud.boltSpeed,ud.boltDmg);
