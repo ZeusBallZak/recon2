@@ -172,6 +172,7 @@ let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
 let currentWeapon='laser';
+let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let weaponAmmoMap={laser:Infinity};
 let grenadeProjs=[], rocketProjs=[], cannonProjs=[];
 // ── Sword slash wave velocity tracking ──────────────────────────
@@ -1157,7 +1158,7 @@ function startGame(){
   score=0;kills=0;wave=1;lastSpawn=0;waveThresh=500;shieldRegen=0;healthRegen=0;waveBreakUntil=0;
   waveSpawnUntil=0; gameEnded=false; _clearPromptSent=false;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
-  currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0;
+  currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0; saberTimer=0;
   currentWeaponIndex=0;
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
@@ -2016,6 +2017,7 @@ function updateWaves(now){
       waveBreakUntil=0;       // clear break sentinel
       showWaveBanner(wave); drawHUD();
       speak('Wave '+wave);
+      equipWeapon(currentWeapon); // restore weapon model/state at wave start
     }
     // Only end game when wave 12's OWN break finishes (not the 11→12 transition)
     if(endingWave===12&&enemies.length===0&&!gameEnded){
@@ -2588,6 +2590,8 @@ function equipWeapon(type){
   currentWeapon=type;
   currentWeaponIndex=WEAPONS_ORDER.indexOf(type);
   if(type!=='saber'){saberTip=null;tipGlowMesh=null;tipGlowMat=null;tipHaloMesh=null;tipHaloMat=null;}
+  // Start 30-second saber timer; clear it for any other weapon
+  saberTimer = (type==='saber') ? 30.0 : 0;
   const def=WEAPONS[type];
   if(weaponAmmoMap[type]===undefined) weaponAmmoMap[type]=def.ammo;
   // Partial refill on pickup if already owned
@@ -2773,14 +2777,23 @@ function playPickupSound(type){
 function playSwingSound(){
   const ctx=getAudio(); if(!ctx) return;
   const t=ctx.currentTime;
-  const o=ctx.createOscillator(); o.type='sine';
-  o.frequency.setValueAtTime(380,t); o.frequency.exponentialRampToValueAtTime(80,t+.22);
-  const g=ctx.createGain(); g.gain.setValueAtTime(.35,t); g.gain.exponentialRampToValueAtTime(.001,t+.25);
-  const o2=ctx.createOscillator(); o2.type='sawtooth';
-  o2.frequency.setValueAtTime(760,t); o2.frequency.exponentialRampToValueAtTime(160,t+.18);
-  const g2=ctx.createGain(); g2.gain.setValueAtTime(.12,t); g2.gain.exponentialRampToValueAtTime(.001,t+.20);
-  o.connect(g); o2.connect(g2); g.connect(ctx.destination); g2.connect(ctx.destination);
-  o.start(t); o2.start(t); o.stop(t+.28); o2.stop(t+.22);
+  const dur=0.18;
+  // White-noise burst shaped like a swish — filtered and pitched down
+  const buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*dur),ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1);
+  const ns=ctx.createBufferSource(); ns.buffer=buf;
+  // Band-pass centred at a mid frequency, sweeping down for the "whoosh" feel
+  const bp=ctx.createBiquadFilter(); bp.type='bandpass';
+  bp.frequency.setValueAtTime(2200,t);
+  bp.frequency.exponentialRampToValueAtTime(600,t+dur);
+  bp.Q.value=1.8;
+  const g=ctx.createGain();
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(0.55,t+0.02);  // fast attack
+  g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  ns.connect(bp); bp.connect(g); g.connect(ctx.destination);
+  ns.start(t); ns.stop(t+dur+0.02);
 }
 
 // ── Rail fire sound — electric crack ────────────────────────────
@@ -4866,6 +4879,8 @@ function updatePortals(dt){
 
     haptic('right',1.0,220);haptic('left',1.0,180);
     speak('Portal');
+    // Re-equip the current weapon so model/state resets correctly after teleport
+    equipWeapon(currentWeapon);
     break;
   }
 }
@@ -4926,6 +4941,16 @@ function loop(time,frame){
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
   if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
+
+  // ── Volt Saber 30-second auto-expire ──────────────────────────────────────
+  if(gameActive&&currentWeapon==='saber'&&saberTimer>0){
+    saberTimer-=dt;
+    if(saberTimer<=0){
+      saberTimer=0;
+      equipWeapon('laser');
+      speak('Volt Saber expired. Switching to laser.');
+    }
+  }
 
   // updateWeapon moved above
 
