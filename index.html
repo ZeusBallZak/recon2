@@ -1329,7 +1329,7 @@ function spawnBolt(startPos,dir,isEnemy,boltSpd=22,boltDmg=10){
     const u={uTime:{value:0},uColor:{value:new THREE.Color(.9,.12,0)}};
     grp.add(new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,LEN,6,1,true),new THREE.ShaderMaterial({uniforms:u,vertexShader:laserV,fragmentShader:laserF,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})));
     grp.add(new THREE.PointLight(0xff2200,3.5,10));
-    grp.userData={vel:d.clone().multiplyScalar(boltSpd),age:0,unis:[u],dmg:boltDmg};
+    grp.userData={vel:d.clone().multiplyScalar(boltSpd),age:0,unis:[u],dmg:boltDmg,shooter:null,rebounded:false};
     scene.add(grp);eBolts.push(grp);
     createBoltBuzz(grp);  // attach live 3-D buzz that follows this bolt
   }else{
@@ -1510,6 +1510,7 @@ function updateEnemies(dt){
       const jitter=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).multiplyScalar(.22);
       const d=new THREE.Vector3().subVectors(_camWP,e.position).normalize().add(jitter).normalize();
       spawnBolt(e.position.clone(),d,true,ud.boltSpeed,ud.boltDmg);
+      if(eBolts.length>0) eBolts[eBolts.length-1].userData.shooter=e;
       ud.shootTimer=Math.max(.4,ud.shootDelay-wave*.08)+Math.random()*ud.shootRand;
     }
     if(ud.hp<=0){ud.isDying=true;dead.push(e);}
@@ -1647,7 +1648,7 @@ function updateBolts(dt){
       p.userData.age+=dt;
       for(const u of p.userData.unis)u.uTime.value+=dt;
       if(p.userData.age>3.5||p.position.length()<getPlanetHeight(p.position.clone().normalize())){rem.push(p);continue;}
-      if(!isPlayer)updateBoltBuzz(p);  // move panner + apply Doppler shift every frame
+      if(!isPlayer&&!p.userData.rebounded)updateBoltBuzz(p);  // move panner + apply Doppler shift every frame
       if(isPlayer){
         let hit=false;
         for(const e of enemies){
@@ -1659,6 +1660,16 @@ function updateBolts(dt){
           }
         }
         if(!hit&&p.userData.age>2.5)rem.push(p);
+      }else if(p.userData.rebounded){
+        // Saber-deflected bolt — kills any enemy on contact (one-hit, instant)
+        let hit=false;
+        for(const e of enemies){
+          if(e.userData.hp>0&&p.position.distanceTo(e.position)<2.5){
+            e.userData.hp=0;
+            triggerKillFlash(0x22aaff);
+            rem.push(p);hit=true;break;
+          }
+        }
       }else{
         if(p.position.distanceTo(_camWP)<1.5){
           if(checkShieldBlock(p.position)){rem.push(p);} // bolt absorbed by shield
@@ -3267,6 +3278,42 @@ function updateLaunchedRibbons(dt){
         e.userData.hp=0; triggerKillFlash(0xffee00);
       }
     }
+  }
+}
+
+// ── Saber bolt parry — deflects eBolts that touch the blade back at the shooter ──
+function updateSaberParry(){
+  if(currentWeapon!=='saber'||!saberTip||!gameActive||!eBolts.length) return;
+  const tipWorld=new THREE.Vector3();
+  saberTip.getWorldPosition(tipWorld);
+  const PARRY_R=1.0; // collision radius around blade tip
+  for(let i=0;i<eBolts.length;i++){
+    const b=eBolts[i];
+    if(b.userData.rebounded) continue;
+    if(tipWorld.distanceTo(b.position)>=PARRY_R) continue;
+    // ── Bolt hit the saber: redirect toward the shooter ────────────
+    const shooter=b.userData.shooter;
+    const newDir=new THREE.Vector3();
+    if(shooter&&shooter.userData&&shooter.userData.hp>0){
+      newDir.subVectors(shooter.position,b.position).normalize();
+    } else {
+      // Shooter already dead: reflect straight back along incoming direction
+      newDir.copy(b.userData.vel).negate().normalize();
+    }
+    b.userData.vel.copy(newDir).multiplyScalar(95); // player bolt speed
+    b.userData.rebounded=true;
+    // Recolour bolt from enemy red → player blue
+    b.traverse(child=>{
+      if(child.isMesh&&child.material){
+        if(child.material.color) child.material.color.setHex(0x22aaff);
+        if(child.material.uniforms&&child.material.uniforms.uColor)
+          child.material.uniforms.uColor.value.set(0,.67,1);
+      }
+      if(child.isLight) child.color.setHex(0x22aaff);
+    });
+    stopBoltBuzz(b); // silence the enemy-bolt 3-D buzz
+    haptic('right',.9,55);
+    triggerKillFlash(0x22aaff);
   }
 }
 
@@ -5028,7 +5075,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
+  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSaberParry(); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
 
   // Refresh FPS counter on wrist HUD every frame
   if(hudTexture&&hudCtx){
