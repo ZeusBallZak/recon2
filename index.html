@@ -171,7 +171,7 @@ let waveBillboard=null;
 let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
-let gamePaused=false; // true when XR session is not focused; polled each frame
+let currentWeapon='laser';
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
@@ -1170,15 +1170,8 @@ function enterVR(){
     renderer.xr.setSession(session);
     initAudio();
     setTimeout(startVolcanoAmbience, 600);
-    setTimeout(()=>{startMusic();buildShieldMesh();}, 800);
+    setTimeout(()=>{startMusic();buildShieldMesh();}, 800); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
-    // Drain the Three.js clock when resuming so we don't get a giant dt spike
-    session.addEventListener('visibilitychange', evt=>{
-      if(evt.session.visibilityState==='visible'){
-        clock.getDelta(); // discard time that accumulated while paused
-        speak('Resuming.');
-      }
-    });
     document.getElementById('overlay').style.display='none';
     startGame();
   }).catch(e=>{setStatus('Session error: '+e.message);});
@@ -5034,15 +5027,6 @@ function loop(time,frame){
   const dt=Math.min(clock.getDelta(),.05);
   if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
-
-  // ── Pause when XR session is explicitly hidden or blurred ─────────────
-  // Guard: skip pause check for the first second so VR session startup
-  // transitions never accidentally block the game from running.
-  const _xrSess=renderer.xr.getSession();
-  const _vs=_xrSess?_xrSess.visibilityState:null;
-  const nowPaused=now>1.0&&(_vs==='hidden'||_vs==='visible-blurred');
-  gamePaused=nowPaused;
-  if(nowPaused){ renderer.render(scene,camera); return; }
 
   terrainU.uTime.value=now;jupU.uTime.value=now;
   drainHaptics();      // must run inside XR frame — Quest 3 ignores out-of-frame pulse() calls
