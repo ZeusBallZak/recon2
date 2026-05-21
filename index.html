@@ -5036,11 +5036,11 @@ function loop(time,frame){
   const now=clock.elapsedTime;
 
   // ── Pause when XR session is explicitly hidden or blurred ─────────────
-  // Whitelist known pause states instead of checking !== 'visible', so that
-  // undefined / unsupported visibilityState values never block the game.
+  // Guard: skip pause check for the first second so VR session startup
+  // transitions never accidentally block the game from running.
   const _xrSess=renderer.xr.getSession();
   const _vs=_xrSess?_xrSess.visibilityState:null;
-  const nowPaused=(_vs==='hidden'||_vs==='visible-blurred');
+  const nowPaused=now>1.0&&(_vs==='hidden'||_vs==='visible-blurred');
   gamePaused=nowPaused;
   if(nowPaused){ renderer.render(scene,camera); return; }
 
