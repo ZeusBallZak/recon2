@@ -171,8 +171,9 @@ let waveBillboard=null;
 let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
-let gamePaused=false;
-let _pauseEnabled=false; // stays false for 3s after session start to ignore Quest startup events
+let currentWeapon='laser';
+let softPaused=false;      // true when headset removed / Universal Menu open
+let _hadFirstVisible=false; // guards against Quest startup visibility events
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
@@ -983,6 +984,10 @@ function drawHUD(){
   const fpsCol=fps>=60?'rgba(80,255,120,0.90)':fps>=45?'rgba(255,220,60,0.90)':'rgba(255,70,50,0.95)';
   ctx.fillStyle=fpsCol;ctx.font='bold 13px monospace';ctx.textAlign='right';
   ctx.fillText('FPS '+fps,W-16,252);
+  if(softPaused){
+    ctx.fillStyle='rgba(255,220,60,0.95)';ctx.font='bold 15px monospace';ctx.textAlign='center';
+    ctx.fillText('⏸ PAUSED',W/2,30);
+  }
 
   hudTexture.needsUpdate=true;
 }
@@ -1173,7 +1178,7 @@ function enterVR(){
     setTimeout(startVolcanoAmbience, 600);
     setTimeout(()=>{startMusic();buildShieldMesh();}, 800); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
-    setupPauseHandling(session);
+    setupSoftPause(session);
     document.getElementById('overlay').style.display='none';
     startGame();
   }).catch(e=>{setStatus('Session error: '+e.message);});
@@ -1641,6 +1646,35 @@ function updateExplosions(dt){
 }
 
 // ── Bolt update ───────────────────────────────────────────────────
+function pauseGame(){
+  if(softPaused) return;
+  softPaused=true;
+  drawHUD(); // show PAUSED indicator on wrist HUD
+}
+function resumeGame(){
+  if(!softPaused) return;
+  softPaused=false;
+  clock.getDelta(); // discard dt that built up while paused
+  drawHUD();
+}
+function setupSoftPause(xrSession){
+  xrSession.addEventListener('visibilitychange',()=>{
+    if(xrSession.visibilityState==='visible'){
+      _hadFirstVisible=true; // session has been properly visible at least once
+      resumeGame();
+    } else if(_hadFirstVisible){
+      // Only pause for events that happen AFTER the first real visible state —
+      // Quest fires visible-blurred during startup before _hadFirstVisible is true,
+      // which we deliberately ignore.
+      pauseGame();
+    }
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden&&_hadFirstVisible) pauseGame();
+  });
+}
+
+
 function updateBolts(dt){
   camera.getWorldPosition(_camWP);
   const sweep=(arr,isPlayer)=>{
@@ -5025,48 +5059,18 @@ function updatePortals(dt){
 // ════════════════════════════════════════════════════════════════
 //  RENDER LOOP
 // ════════════════════════════════════════════════════════════════
-function pauseGame(){
-  if(gamePaused) return;
-  gamePaused=true;
-}
-function resumeGame(){
-  if(!gamePaused) return;
-  gamePaused=false;
-  clock.getDelta(); // discard dt that built up while paused
-}
-function setupPauseHandling(xrSession){
-  // Delay enabling pause by 3s — Quest fires visibilitychange='visible-blurred'
-  // during its own startup sequence, which would permanently pause the game
-  // before the player has done anything.
-  setTimeout(()=>{ _pauseEnabled=true; }, 10000);
-
-  xrSession.addEventListener('visibilitychange',()=>{
-    if(!_pauseEnabled) return;
-    if(xrSession.visibilityState!=='visible'){
-      pauseGame();
-    } else {
-      resumeGame();
-    }
-  });
-  document.addEventListener('visibilitychange',()=>{
-    if(!_pauseEnabled) return;
-    if(document.hidden) pauseGame();
-  });
-}
-
 function loop(time,frame){
   const dt=Math.min(clock.getDelta(),.05);
   if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
-
-  if(gamePaused){ renderer.render(scene,camera); return; }
 
   terrainU.uTime.value=now;jupU.uTime.value=now;
   drainHaptics();      // must run inside XR frame — Quest 3 ignores out-of-frame pulse() calls
   updateAudioListener();
   updateLava();updatePlumes(dt);
 
-  if(gameActive){
+  // ── Soft pause: world keeps rendering but combat/AI/waves suspend ────────
+  if(!softPaused&&gameActive){
     updatePlayer(dt);
     updateEnemies(dt);
     updateBolts(dt);
