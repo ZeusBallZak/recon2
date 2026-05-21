@@ -5038,7 +5038,7 @@ function setupPauseHandling(xrSession){
   // Delay enabling pause by 3s — Quest fires visibilitychange='visible-blurred'
   // during its own startup sequence, which would permanently pause the game
   // before the player has done anything.
-  setTimeout(()=>{ _pauseEnabled=true; }, 3000);
+  setTimeout(()=>{ _pauseEnabled=true; }, 10000);
 
   xrSession.addEventListener('visibilitychange',()=>{
     if(!_pauseEnabled) return;
