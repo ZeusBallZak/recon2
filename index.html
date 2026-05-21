@@ -195,6 +195,7 @@ let _slashPts=[], _slashSampleTimer=0, _slashActiveDur=0;
 let _slashMesh=null, _slashMat=null;
 let launchedRibbons=[], _detachTimer=0.5; // launched ribbon projectiles
 let pickups=[];
+let healthPacks=[]; // red-cross health pack pickups
 let flameCooldown=0;
 
 const SPEED=5.5, SPRINT=9.0, SENS_SNAP=Math.PI/4; // 45° snap turns
@@ -1238,6 +1239,8 @@ function startGame(){
   launchedRibbons=[]; _detachTimer=0.5;
   gripPosInitialised=false;
   pickups.forEach(p=>{scene.remove(p.mesh);if(p.meshLD)scene.remove(p.meshLD);}); pickups=[];
+  healthPacks.forEach(p=>{scene.remove(p.mesh);scene.remove(p.meshLD);}); healthPacks=[];
+  shieldPacks.forEach(p=>{scene.remove(p.mesh);scene.remove(p.meshLD);}); shieldPacks=[];
   setTimeout(spawnInitialPickups, 1200);
   dolly.position.set(0, getPlanetHeight({x:0,y:1,z:0}), 0); dolly.quaternion.identity();
   for(let i=0;i<3;i++)setTimeout(spawnEnemy,i*600);
@@ -2116,6 +2119,8 @@ function updateWaves(now){
       _clearPromptSent=false;
       waveBreakUntil=now+20;
       spawnBreakPickups();
+      spawnBreakHealthPacks();
+      spawnBreakShieldPacks();
       if(!upgradePhase) showUpgradeCards();
       const label=wave<12?'Wave '+wave+' complete.':'Final wave complete.';
       speak(label+' 20 second break.');
@@ -2778,6 +2783,267 @@ function buildPickupLOD(type){
 
 // spawnPickup now takes a normalised THREE.Vector3 direction on the sphere.
 // Legacy callers that pass (type, x, z) are handled below.
+// ── HEALTH PACKS ─────────────────────────────────────────────────────────────
+// Red-cross pickup that restores 100 HP. Same LOD/bob/collect system as weapon pickups.
+
+function _makeHealthCrossTexture(){
+  const cv=document.createElement('canvas'); cv.width=64; cv.height=64;
+  const c=cv.getContext('2d');
+  c.clearRect(0,0,64,64);
+  // White background square
+  c.fillStyle='rgba(255,255,255,0.92)';
+  c.fillRect(10,10,44,44);
+  // Red cross
+  c.fillStyle='#ee1111';
+  c.fillRect(22,10,20,44); // vertical bar
+  c.fillRect(10,22,44,20); // horizontal bar
+  return new THREE.CanvasTexture(cv);
+}
+
+function buildHealthPackMesh(){
+  const g=new THREE.Group();
+  const tex=_makeHealthCrossTexture();
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
+  // Two crossed quads so cross is visible from any angle
+  const q1=new THREE.Mesh(new THREE.PlaneGeometry(.40,.40),mat); g.add(q1);
+  const q2=new THREE.Mesh(new THREE.PlaneGeometry(.40,.40),mat);
+  q2.rotation.y=Math.PI/2; g.add(q2);
+  // Red inner glow
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.30,8,6),
+    new THREE.MeshBasicMaterial({color:0xff2020,transparent:true,opacity:.18,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide})));
+  // Red point light
+  g.add(new THREE.PointLight(0xff2020,2.5,8));
+  // Vertical beacon beam
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,4,6),
+    new THREE.MeshBasicMaterial({color:0xff2020,transparent:true,opacity:.22,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  return g;
+}
+
+function buildHealthPackLOD(){
+  const g=new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.22,6,4),
+    new THREE.MeshBasicMaterial({color:0xff2020,transparent:true,opacity:.90,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,3.5,4),
+    new THREE.MeshBasicMaterial({color:0xff2020,transparent:true,opacity:.30,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  return g;
+}
+
+function playPickupSoundHealth(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  // Two-tone ascending ding — medical/positive feel
+  [440,660].forEach((freq,i)=>{
+    const o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(freq,t+i*.1);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(.35,t+i*.1); g.gain.exponentialRampToValueAtTime(.001,t+i*.1+.28);
+    o.connect(g); g.connect(ctx.destination); o.start(t+i*.1); o.stop(t+i*.1+.30);
+  });
+}
+
+function spawnHealthPack(dir){
+  const n=dir.clone().normalize();
+  const surfR=getPlanetHeight(n);
+  const pos=n.clone().multiplyScalar(surfR+1.2);
+  const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),n);
+  const mesh=buildHealthPackMesh(); mesh.position.copy(pos); mesh.quaternion.copy(q); scene.add(mesh);
+  const meshLD=buildHealthPackLOD(); meshLD.position.copy(pos); meshLD.quaternion.copy(q);
+  meshLD.visible=false; scene.add(meshLD);
+  healthPacks.push({mesh,meshLD,age:0,surfNorm:n.clone()});
+}
+
+// Spawn 4 health packs within ~50 m of the player at each wave break
+function spawnBreakHealthPacks(){
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const playerDir=camPos.clone().normalize();
+  const arb=Math.abs(playerDir.y)<0.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);
+  const t1=new THREE.Vector3().crossVectors(playerDir,arb).normalize();
+  const t2=new THREE.Vector3().crossVectors(playerDir,t1);
+  for(let i=0;i<4;i++){
+    const ang=(i/4)*Math.PI*2+Math.random()*.5;
+    const dist=10+Math.random()*35; // 10–45 m arc from player
+    const off=dist/PLANET_R;
+    const dir=playerDir.clone()
+      .addScaledVector(t1,Math.cos(ang)*off)
+      .addScaledVector(t2,Math.sin(ang)*off)
+      .normalize();
+    spawnHealthPack(dir);
+  }
+}
+
+function updateHealthPacks(dt){
+  const t=clock.elapsedTime;
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const rem=[];
+  for(const p of healthPacks){
+    p.age+=dt;
+    const sn=p.surfNorm;
+    const bob=Math.sin(t*2+p.age)*.04;
+    const worldR=getPlanetHeight(sn)+1.2+bob;
+    const dist=camPos.distanceTo(p.mesh.position);
+    const useHD=dist<=10;
+    p.mesh.visible=useHD; p.meshLD.visible=!useHD;
+    if(useHD){
+      p.mesh.rotateOnAxis(sn,dt*(Math.PI/2));
+      p.mesh.position.copy(sn).multiplyScalar(worldR);
+    } else {
+      p.meshLD.position.copy(sn).multiplyScalar(worldR);
+    }
+    // Collect within 2.5 m
+    if(dist<2.5){
+      health=Math.min(maxHealth,health+100);
+      drawHUD();
+      haptic('right',.8,120);
+      playPickupSoundHealth();
+      speak('Health pack. 100 health restored.');
+      scene.remove(p.mesh); scene.remove(p.meshLD);
+      rem.push(p);
+    }
+  }
+  healthPacks=healthPacks.filter(x=>!rem.includes(x));
+}
+
+// ── SHIELD PACKS ─────────────────────────────────────────────────────────────
+// Traditional shield-icon pickup — grants 10 seconds of full shield on collect.
+
+let shieldPacks=[];
+
+function _makeShieldTexture(){
+  const cv=document.createElement('canvas'); cv.width=64; cv.height=80;
+  const c=cv.getContext('2d');
+  c.clearRect(0,0,64,80);
+  // Traditional heraldic shield silhouette
+  c.beginPath();
+  c.moveTo(4,4); c.lineTo(60,4);           // top edge
+  c.lineTo(60,46);                          // right side
+  c.quadraticCurveTo(60,66,32,76);          // right curve to point
+  c.quadraticCurveTo(4,66,4,46);            // left curve from point
+  c.closePath();
+  // Fill — royal blue
+  c.fillStyle='#1144ee'; c.fill();
+  // White border
+  c.strokeStyle='rgba(255,255,255,0.92)'; c.lineWidth=3; c.stroke();
+  // White cross emblem
+  c.fillStyle='rgba(255,255,255,0.88)';
+  c.fillRect(28,14,8,40); // vertical bar
+  c.fillRect(12,30,40,8); // horizontal bar
+  return new THREE.CanvasTexture(cv);
+}
+
+function buildShieldPackMesh(){
+  const g=new THREE.Group();
+  const tex=_makeShieldTexture();
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
+  // Two crossed quads so icon is visible from any angle
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(.40,.50),mat));
+  const q2=new THREE.Mesh(new THREE.PlaneGeometry(.40,.50),mat);
+  q2.rotation.y=Math.PI/2; g.add(q2);
+  // Blue inner glow
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.32,8,6),
+    new THREE.MeshBasicMaterial({color:0x2266ff,transparent:true,opacity:.20,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide})));
+  // Blue point light
+  g.add(new THREE.PointLight(0x2266ff,2.5,8));
+  // Vertical beacon beam
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,4,6),
+    new THREE.MeshBasicMaterial({color:0x2266ff,transparent:true,opacity:.22,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  return g;
+}
+
+function buildShieldPackLOD(){
+  const g=new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(.22,6,4),
+    new THREE.MeshBasicMaterial({color:0x2266ff,transparent:true,opacity:.90,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,3.5,4),
+    new THREE.MeshBasicMaterial({color:0x2266ff,transparent:true,opacity:.30,
+      blending:THREE.AdditiveBlending,depthWrite:false})));
+  return g;
+}
+
+function playPickupSoundShield(){
+  const ctx=getAudio(); if(!ctx) return;
+  const t=ctx.currentTime;
+  // Low power-up chord — two detuned sine tones
+  [[220,0],[330,.06]].forEach(([freq,delay])=>{
+    const o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(freq,t+delay);
+    o.frequency.linearRampToValueAtTime(freq*1.5,t+delay+.22);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(.32,t+delay); g.gain.exponentialRampToValueAtTime(.001,t+delay+.35);
+    o.connect(g); g.connect(ctx.destination); o.start(t+delay); o.stop(t+delay+.38);
+  });
+}
+
+function spawnShieldPack(dir){
+  const n=dir.clone().normalize();
+  const surfR=getPlanetHeight(n);
+  const pos=n.clone().multiplyScalar(surfR+1.2);
+  const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),n);
+  const mesh=buildShieldPackMesh(); mesh.position.copy(pos); mesh.quaternion.copy(q); scene.add(mesh);
+  const meshLD=buildShieldPackLOD(); meshLD.position.copy(pos); meshLD.quaternion.copy(q);
+  meshLD.visible=false; scene.add(meshLD);
+  shieldPacks.push({mesh,meshLD,age:0,surfNorm:n.clone()});
+}
+
+function spawnBreakShieldPacks(){
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const playerDir=camPos.clone().normalize();
+  const arb=Math.abs(playerDir.y)<0.9?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0);
+  const t1=new THREE.Vector3().crossVectors(playerDir,arb).normalize();
+  const t2=new THREE.Vector3().crossVectors(playerDir,t1);
+  for(let i=0;i<4;i++){
+    const ang=(i/4)*Math.PI*2+Math.random()*.5;
+    const dist=10+Math.random()*35;
+    const off=dist/PLANET_R;
+    const dir=playerDir.clone()
+      .addScaledVector(t1,Math.cos(ang)*off)
+      .addScaledVector(t2,Math.sin(ang)*off)
+      .normalize();
+    spawnShieldPack(dir);
+  }
+}
+
+function updateShieldPacks(dt){
+  const t=clock.elapsedTime;
+  const camPos=new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const rem=[];
+  for(const p of shieldPacks){
+    p.age+=dt;
+    const sn=p.surfNorm;
+    const bob=Math.sin(t*2+p.age)*.04;
+    const worldR=getPlanetHeight(sn)+1.2+bob;
+    const dist=camPos.distanceTo(p.mesh.position);
+    const useHD=dist<=10;
+    p.mesh.visible=useHD; p.meshLD.visible=!useHD;
+    if(useHD){
+      p.mesh.rotateOnAxis(sn,dt*(Math.PI/2));
+      p.mesh.position.copy(sn).multiplyScalar(worldR);
+    } else {
+      p.meshLD.position.copy(sn).multiplyScalar(worldR);
+    }
+    if(dist<2.5){
+      // Activate shield for 10 seconds, bypassing cooldown
+      shieldActive=true;
+      shieldDur=10.0;
+      shieldRecharge=0;
+      drawHUD();
+      haptic('right',1.0,200); haptic('left',1.0,200);
+      playPickupSoundShield();
+      speak('Shield activated. 10 seconds.');
+      scene.remove(p.mesh); scene.remove(p.meshLD);
+      rem.push(p);
+    }
+  }
+  shieldPacks=shieldPacks.filter(x=>!rem.includes(x));
+}
+
+
 function spawnPickup(type, dirOrX, zOrUndef){
   let n;
   if(dirOrX instanceof THREE.Vector3){
@@ -5112,7 +5378,7 @@ function loop(time,frame){
   updateSaberTrails(dt);
   updateUpgradeCards(dt);
   updateWeapon(dt,now);
-  if(gameActive){ updatePickups(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSaberParry(); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
+  if(gameActive){ updatePickups(dt); updateHealthPacks(dt); updateShieldPacks(dt); updateProjectiles(dt); updateSlashDetection(dt); updateSaberParry(); updateLaunchedRibbons(dt); updateShotgunBolts(dt); }
 
   // Refresh FPS counter on wrist HUD every frame
   if(hudTexture&&hudCtx){
