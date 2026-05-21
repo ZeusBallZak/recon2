@@ -172,6 +172,7 @@ let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
 let gamePaused=false;
+let _pauseEnabled=false; // stays false for 3s after session start to ignore Quest startup events
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
@@ -5031,10 +5032,16 @@ function pauseGame(){
 function resumeGame(){
   if(!gamePaused) return;
   gamePaused=false;
-  clock.getDelta(); // discard dt that built up while paused so game doesn't jump
+  clock.getDelta(); // discard dt that built up while paused
 }
 function setupPauseHandling(xrSession){
+  // Delay enabling pause by 3s — Quest fires visibilitychange='visible-blurred'
+  // during its own startup sequence, which would permanently pause the game
+  // before the player has done anything.
+  setTimeout(()=>{ _pauseEnabled=true; }, 3000);
+
   xrSession.addEventListener('visibilitychange',()=>{
+    if(!_pauseEnabled) return;
     if(xrSession.visibilityState!=='visible'){
       pauseGame();
     } else {
@@ -5042,6 +5049,7 @@ function setupPauseHandling(xrSession){
     }
   });
   document.addEventListener('visibilitychange',()=>{
+    if(!_pauseEnabled) return;
     if(document.hidden) pauseGame();
   });
 }
