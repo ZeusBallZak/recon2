@@ -5035,12 +5035,12 @@ function loop(time,frame){
   if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
 
-  // ── Pause check: poll XR session visibility state every frame ─────────
-  // Polling is more reliable than events on Quest Browser — the session may
-  // fire 'visible-blurred' during startup without a subsequent 'visible' event.
-  // visibilityState: 'visible' = play  |  'visible-blurred'/'hidden' = pause
+  // ── Pause when XR session is explicitly hidden or blurred ─────────────
+  // Whitelist known pause states instead of checking !== 'visible', so that
+  // undefined / unsupported visibilityState values never block the game.
   const _xrSess=renderer.xr.getSession();
-  const nowPaused=_xrSess!=null&&_xrSess.visibilityState!=='visible';
+  const _vs=_xrSess?_xrSess.visibilityState:null;
+  const nowPaused=(_vs==='hidden'||_vs==='visible-blurred');
   gamePaused=nowPaused;
   if(nowPaused){ renderer.render(scene,camera); return; }
 
