@@ -171,7 +171,7 @@ let waveBillboard=null;
 let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
-let currentWeapon='laser';
+let gamePaused=false; // true when XR session is hidden or visible-blurred
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
@@ -1172,6 +1172,24 @@ function enterVR(){
     setTimeout(startVolcanoAmbience, 600);
     setTimeout(()=>{startMusic();buildShieldMesh();}, 800); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
+
+    // ── WebXR-native pause: listen for headset removal / system overlay ───
+    // visibilityState: 'visible' = normal play
+    //                  'visible-blurred' = Universal Menu / system UI open
+    //                  'hidden' = headset removed / auto-sleep
+    // Per Meta VRC.Quest.Functional.2, all interactable elements must pause
+    // in these states. We keep the render loop alive but skip simulation.
+    session.addEventListener('visibilitychange', evt=>{
+      const state=evt.session.visibilityState;
+      if(state==='visible'){
+        gamePaused=false;
+        clock.getDelta(); // discard accumulated dt so game doesn't jump forward
+        speak('Resuming.');
+      } else {
+        gamePaused=true; // 'visible-blurred' or 'hidden'
+      }
+    });
+
     document.getElementById('overlay').style.display='none';
     startGame();
   }).catch(e=>{setStatus('Session error: '+e.message);});
@@ -5027,6 +5045,11 @@ function loop(time,frame){
   const dt=Math.min(clock.getDelta(),.05);
   if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
+
+  // ── Skip all simulation when XR session is paused ─────────────────────
+  // (headset removed, Universal Menu open, or system overlay active)
+  // The render call below still runs so the compositor gets a frame.
+  if(gamePaused){ renderer.render(scene,camera); return; }
 
   terrainU.uTime.value=now;jupU.uTime.value=now;
   drainHaptics();      // must run inside XR frame — Quest 3 ignores out-of-frame pulse() calls
