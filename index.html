@@ -104,6 +104,7 @@ let damageSphere;
 
 // ── Game state ──────────────────────────────────────────────────────────
 let gameActive=false, gameOverState=false;
+let _goKills=0, _goScore=0, _goWave=1; // snapshot at game-over — immune to resets
 let health=100, maxHealth=100, shield=100, maxShield=100;
 let score=0, kills=0, wave=1, lastSpawn=0, waveThresh=500, shieldRegen=0, healthRegen=0, waveBreakUntil=0;
 let waveSpawnUntil=0;  // clock.elapsedTime when this wave's 1-min spawn window closes
@@ -1765,18 +1766,20 @@ function updatePlayer(dt){
       if(Math.abs(ax[2])>.15)moveX=ax[2];
       if(Math.abs(ax[3])>.15)moveZ=ax[3];
       leftGripHeld=gp.buttons[1]?.pressed??false;
-      // X button (index 4): cycle weapons
+      // X button (index 4): cycle weapons — DISABLED (set to false to re-enable)
+      const X_BUTTON_ENABLED = false;
       const xNow=gp.buttons[4]?.pressed??false;
-      if(xNow&&!xWasPressed){
+      if(X_BUTTON_ENABLED&&xNow&&!xWasPressed&&gameActive){
         currentWeaponIndex=(currentWeaponIndex+1)%WEAPONS_ORDER.length;
         const nextType=WEAPONS_ORDER[currentWeaponIndex];
         equipWeapon(nextType);
         speak(WEAPONS[nextType].name);
       }
       xWasPressed=xNow;
-      // Y button (index 5): skip to next wave — kills remaining enemies and ends spawn window
+      // Y button (index 5): skip to next wave — DISABLED (set to false to re-enable)
+      const Y_BUTTON_ENABLED = false;
       const yNow=gp.buttons[5]?.pressed??false;
-      if(yNow&&!yWasPressed&&gameActive&&!gameEnded){
+      if(Y_BUTTON_ENABLED&&yNow&&!yWasPressed&&gameActive&&!gameEnded){
         enemies.forEach(e=>{ e.userData.hp=0; });
         const now2=clock.elapsedTime;
         if(waveSpawnUntil>now2) waveSpawnUntil=now2-0.1; // force spawn window closed
@@ -2014,7 +2017,18 @@ function takeDamage(dmg){
 }
 
 function triggerGameOver(){
-  gameActive=false;gameOverState=true;
+  // Snapshot stats BEFORE anything is cleared — banner reads these
+  _goKills=kills; _goScore=score; _goWave=wave;
+
+  gameActive=false; gameOverState=true; gameEnded=true; // stops waves + spawning
+
+  // Kill all remaining enemies with explosion effects
+  enemies.forEach(e=>{
+    spawnExplosion(e.position.clone(), 0xff2200, 1.2);
+    scene.remove(e);
+  });
+  enemies=[];
+
   // Stop super blast charge immediately — if the player dies while holding
   // the trigger, chargeOsc is still live and will resume when AudioContext
   // unuspends. Disconnect and null it here before suspending.
@@ -2026,11 +2040,10 @@ function triggerGameOver(){
   stopAllAudio();
   window.speechSynthesis?.cancel();
   setTimeout(showGameOverBanner, 400); // brief delay so VR frame settles
-  saveScore(score,wave,kills).then(()=>drawGameOverHUD());
-  enemies.forEach(e=>scene.remove(e));
+  saveScore(_goScore,_goWave,_goKills).then(()=>drawGameOverHUD());
   pBolts.forEach(p=>scene.remove(p));
   eBolts.forEach(p=>{stopBoltBuzz(p);scene.remove(p);});
-  enemies=[];pBolts=[];eBolts=[];
+  pBolts=[];eBolts=[];
   drawHUD();
 }
 
@@ -2539,7 +2552,7 @@ async function drawGameOverHUD(){
   ctx.fillStyle='rgba(255,30,0,0.90)';ctx.font='bold 22px monospace';ctx.textAlign='center';
   ctx.fillText('MARINE DOWN',W/2,36);
   ctx.fillStyle='rgba(255,100,50,0.70)';ctx.font='bold 14px monospace';
-  ctx.fillText(`SCORE ${score}  ·  KILLS ${kills}  ·  WAVE ${wave}`,W/2,60);
+  ctx.fillText(`SCORE ${_goScore}  ·  KILLS ${_goKills}  ·  WAVE ${_goWave}`,W/2,60);
   ctx.fillStyle='rgba(255,80,0,0.40)';ctx.font='11px monospace';
   ctx.fillText('PULL RIGHT TRIGGER TO REDEPLOY',W/2,80);
 
@@ -3889,9 +3902,9 @@ function showGameOverBanner(){
 
   // Stats row
   c.font='bold 22px monospace'; c.fillStyle='rgba(255,140,140,0.80)';
-  c.fillText(`SCORE  ${score.toLocaleString()}`, W/2-160, 178);
-  c.fillText(`WAVE  ${wave}`, W/2+20, 178);
-  c.fillText(`KILLS  ${kills}`, W/2+160, 178);
+  c.fillText(`SCORE  ${_goScore.toLocaleString()}`, W/2-160, 178);
+  c.fillText(`WAVE  ${_goWave}`, W/2+20, 178);
+  c.fillText(`KILLS  ${_goKills}`, W/2+160, 178);
 
   // Instruction
   c.font='14px monospace'; c.fillStyle='rgba(220,60,60,0.50)';
