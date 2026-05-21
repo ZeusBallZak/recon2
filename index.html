@@ -171,7 +171,7 @@ let waveBillboard=null;
 let gameOverBillboard=null;
 
 // ── Weapon system ─────────────────────────────────────────────────────
-let currentWeapon='laser';
+let gamePaused=false;
 let saberTimer=0; // counts down when saber is active; switches back to laser at 0
 let _fpsSmooth=72; // exponential moving average of frame rate shown on HUD
 let weaponAmmoMap={laser:Infinity};
@@ -1172,6 +1172,7 @@ function enterVR(){
     setTimeout(startVolcanoAmbience, 600);
     setTimeout(()=>{startMusic();buildShieldMesh();}, 800); // slight delay for AudioContext to warm up
     session.addEventListener('end',onXREnd);
+    setupPauseHandling(session);
     document.getElementById('overlay').style.display='none';
     startGame();
   }).catch(e=>{setStatus('Session error: '+e.message);});
@@ -5023,10 +5024,34 @@ function updatePortals(dt){
 // ════════════════════════════════════════════════════════════════
 //  RENDER LOOP
 // ════════════════════════════════════════════════════════════════
+function pauseGame(){
+  if(gamePaused) return;
+  gamePaused=true;
+}
+function resumeGame(){
+  if(!gamePaused) return;
+  gamePaused=false;
+  clock.getDelta(); // discard dt that built up while paused so game doesn't jump
+}
+function setupPauseHandling(xrSession){
+  xrSession.addEventListener('visibilitychange',()=>{
+    if(xrSession.visibilityState!=='visible'){
+      pauseGame();
+    } else {
+      resumeGame();
+    }
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden) pauseGame();
+  });
+}
+
 function loop(time,frame){
   const dt=Math.min(clock.getDelta(),.05);
   if(dt>0) _fpsSmooth+=(1/dt-_fpsSmooth)*0.1; // exponential moving average
   const now=clock.elapsedTime;
+
+  if(gamePaused){ renderer.render(scene,camera); return; }
 
   terrainU.uTime.value=now;jupU.uTime.value=now;
   drainHaptics();      // must run inside XR frame — Quest 3 ignores out-of-frame pulse() calls
