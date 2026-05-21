@@ -1231,6 +1231,7 @@ function startGame(){
   waveSpawnUntil=0; gameEnded=false; _clearPromptSent=false;
   playerVY=0;isGrounded=true;dashActive=false;dashRemaining=0;dashCooldown=0;enemies.forEach(e=>{if(e.userData)e.userData.dashHit=false;});
   currentWeapon='laser'; weaponAmmoMap={laser:Infinity}; flameCooldown=0; saberTimer=0;
+  equipWeapon('laser'); // rebuild weapon geometry on the hand from a clean state
   currentWeaponIndex=0;
   fireCooldown=0;
   grenadeProjs=[]; rocketProjs=[]; cannonProjs=[];
