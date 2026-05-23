@@ -10,13 +10,13 @@
   "theme_color": "#000010",
   "icons": [
     {
-      "src": "https://github.com/ZeusBallZak/io-first-contact/blob/main/icons-192.png",
+      "src": "https://github.com/ZeusBallZak/io-first-contact/blob/main/images/icons-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "https://github.com/ZeusBallZak/io-first-contact/blob/main/icon-512.png",
+      "src": "https://github.com/ZeusBallZak/io-first-contact/blob/main/images/icons-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
