@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000010">
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');</script>
 <title>IO: FIRST CONTACT — VR</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
@@ -5422,6 +5425,23 @@ function loop(time,frame){
 
 init();
 
+</script>
+
+<!-- Auto-enter VR when launched as a PWA from Meta Horizon Store.
+     The app-icon tap counts as user activation for requestSession(),
+     so we can call startXR() directly on load — no button press needed.
+     The display-mode check ensures this only fires in PWA / fullscreen
+     context, never in the regular Quest browser. -->
+<script type="text/javascript">
+  window.addEventListener('load', function() {
+    const inPWA = window.matchMedia('(display-mode: fullscreen)').matches
+               || window.matchMedia('(display-mode: standalone)').matches;
+    if (inPWA && navigator.xr) {
+      navigator.xr.isSessionSupported('immersive-vr').then(function(supported) {
+        if (supported) startXR();
+      });
+    }
+  });
 </script>
 </body>
 </html>
