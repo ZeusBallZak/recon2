@@ -1,0 +1,18 @@
+{
+  "short_name": "RECON 2",
+  "name": "RECON 2",
+  "icons": [
+ {
+   "src": "/images/icons-192.png",
+   "type": "image/png",
+   "sizes": "192x192"
+ },
+ {
+   "src": "/images/icons-512.png",
+   "type": "image/png",
+   "sizes": "512x512"
+ }
+  ],
+  "start_url": "https://zeusballzak.github.io/io-first-contact/",
+  "scope": "https://zeusballzak.github.io/",
+}
