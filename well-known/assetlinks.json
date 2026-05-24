@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "RECON 2",
+      "package_name": "io.github.zeusballzak.recon2",
+      "sha256_cert_fingerprints": [
+        "23:B3:3A:F0:2A:E0:C5:2E:DE:D7:98:90:94:ED:B6:3C:D6:49:3B:1A:12:FF:8A:FD:55:D8:18:23:0D:96:30:EF"
+      ]
+    }
+  }
+]
