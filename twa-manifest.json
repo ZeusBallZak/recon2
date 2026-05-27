@@ -1,0 +1,55 @@
+{
+  "packageId": "app.netlify.reconjupiter",
+  "applicationId": "0",
+  "host": "reconjupiter.netlify.app",
+  "name": "RECON_2",
+  "launcherName": "RECON_2",
+  "display": "standalone",
+  "themeColor": "#000010",
+  "themeColorDark": "#000000",
+  "navigationColor": "#000000",
+  "navigationColorDark": "#000000",
+  "navigationDividerColor": "#000000",
+  "navigationDividerColorDark": "#000000",
+  "backgroundColor": "#000010",
+  "enableNotifications": true,
+  "enableMicrophone": false,
+  "enableXRScene": false,
+  "startUrl": "/",
+  "iconUrl": "https://reconjupiter.netlify.app/icons/icons-512.png",
+  "maskableIconUrl": "https://reconjupiter.netlify.app/icons/icons-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "C:\\Users\\User\\Downloads\\00000_io-first-contact\\recon2-keystore.jks",
+    "alias": "android"
+  },
+  "appVersionName": "1",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://reconjupiter.netlify.app/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "horizonPlatformSDK": {
+      "enabled": true
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": true,
+  "horizonOSAppMode": "immersive",
+  "fullScopeUrl": "https://reconjupiter.netlify.app/",
+  "minSdkVersion": 23,
+  "orientation": "default",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "protocolHandlers": [],
+  "fileHandlers": [],
+  "launchHandlerClientMode": "",
+  "displayOverride": [],
+  "appVersion": "1"
+}
