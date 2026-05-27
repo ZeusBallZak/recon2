@@ -1,6 +1,6 @@
 {
-  "name": "RECON 2",
-  "short_name": "RECON 2",
+  "name": "RECON_2",
+  "short_name": "RECON_2",
   "description": "Immersive WebXR shooter set on Io, a moon of Jupiter. Defend against waves of drones across a volcanic alien landscape.",
   "start_url": "https://reconjupiter.netlify.app/",
   "scope": "https://reconjupiter.netlify.app/",
