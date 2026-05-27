@@ -2,21 +2,21 @@
   "name": "RECON 2",
   "short_name": "RECON 2",
   "description": "Immersive WebXR shooter set on Io, a moon of Jupiter. Defend against waves of drones across a volcanic alien landscape.",
-  "start_url": "https://ZeusBallZak.github.io/io-first-contact/",
-  "scope": "https://ZeusBallZak.github.io/",
+  "start_url": "https://reconjupiter.netlify.app/",
+  "scope": "https://reconjupiter.netlify.app/",
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#000010",
   "theme_color": "#000010",
   "icons": [
     {
-      "src": "https://ZeusBallZak.github.io/io-first-contact/icons/icons-192.png",
+      "src": "https://reconjupiter.netlify.app/icons/icons-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "https://ZeusBallZak.github.io/io-first-contact/icons/icons-512.png",
+      "src": "https://reconjupiter.netlify.app/icons/icons-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
